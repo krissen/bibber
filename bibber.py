@@ -56,7 +56,7 @@ def search_entries(query):
                 lambda entry: (
                     entry[0],
                     safe_latex_to_text(entry[1].get("title", "")) + " " +
-                    safe_latex_to_text(entry[1].get("author", "")) + " " +
+                    safe_latex_to_text(entry[1].get("author", entry[1].get("editor", "Okänd författare"))) + " " +
                     safe_latex_to_text(entry[1].get("journaltitle", entry[1].get("journal", entry[1].get("booktitle", ""))))
                 ),
                 enumerate(bib_data.values()),
@@ -101,11 +101,25 @@ def search_entries(query):
 
         entry = list(bib_data.values())[idx]
         year = sanitize_year(entry.get("year", "0"))
-        authors = safe_latex_to_text(entry.get("author", "Okänd författare"))
+
+        # Hantera författare eller redaktör
+        authors = safe_latex_to_text(entry.get("author"))
+        if not authors:
+            editors = safe_latex_to_text(entry.get("editor", "Okänd författare"))
+            if " and " in editors:
+                authors = f"{editors} (eds.)"
+            else:
+                authors = f"{editors} (ed.)"
+
+        # Hantera titel baserat på entrytype
         title = safe_latex_to_text(entry.get("title", "Saknar titel"))
-        source = safe_latex_to_text(
-            entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
-        )
+        entrytype = entry.get("entrytype", "").lower()
+        if entrytype == "book":
+            source = ""
+        else:
+            source = safe_latex_to_text(
+                entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
+            )
 
         scored_entries.append(
             {
@@ -126,10 +140,15 @@ def search_entries(query):
     print("\nSökresultat:\n")
     for i, result in enumerate(search_results):
         source_display = result["source"]
-        print(
-            f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}."
-            + (f" {source_display}" if source_display else "")
-        )
+
+        # Konstruera referens utan onödiga punkter
+        reference = f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}"
+        if source_display:
+            reference += f". {source_display}"
+        reference += "."  # Slutpunkt endast om värden finns
+
+        # Skriv ut referensen
+        print(reference)
         print(f"    Träff: {result['score']:.1f}%\n")
 
 
@@ -238,9 +257,15 @@ def generate_apa(entry):
     """Generate APA 7-style reference."""
     latex_converter = LatexNodes2Text()
 
-    # Författare
-    authors_raw = latex_converter.latex_to_text(entry.get("author", "Unknown Author"))
+    # Författare eller redaktörer
+    authors_raw = latex_converter.latex_to_text(entry.get("author", ""))
     authors = []
+    if not authors_raw:
+        authors_raw = latex_converter.latex_to_text(entry.get("editor", "Unknown Editor"))
+        is_editor = True
+    else:
+        is_editor = False
+
     for author in authors_raw.split(" and "):
         names = author.split(", ")
         if len(names) == 2:
@@ -249,6 +274,10 @@ def generate_apa(entry):
             authors.append(f"{last_name}, {initials}")
     authors = " & ".join(authors)
 
+    # Lägg till (ed.) eller (eds.) för redaktörer
+    if is_editor:
+        authors += " (ed.)" if len(authors_raw.split(" and ")) == 1 else " (eds.)"
+
     # År
     year = entry.get("year", "n.d.")
 
@@ -256,53 +285,67 @@ def generate_apa(entry):
     title = latex_converter.latex_to_text(entry.get("title", "Untitled"))
     title = title[0].upper() + title[1:] if title else "Untitled"
 
-    # Kontrollera om det är en avhandling
+    # Källor och kontext
     entry_type = entry.get("entrytype", "").lower()
     if DEBUG_MODE:
         print(f"Debug: Entry type: {entry_type}")
 
-    if entry_type in {"phdthesis", "mastersthesis"}:
-        dissertation_type = (
-            "Doctoral dissertation" if entry_type == "phdthesis" else "Master’s thesis"
-        )
-        institution = latex_converter.latex_to_text(
-            entry.get("institution", entry.get("school", "Unknown institution"))
-        )
-        publisher = latex_converter.latex_to_text(entry.get("publisher", ""))
-        if DEBUG_MODE:
-            print(f"Debug: Institution: {institution}, Publisher: {publisher}")
-
-        apa_reference = (
-            f"{authors} ({year}). *{title}* ({dissertation_type}). {institution}"
-        )
-        if publisher and publisher != institution:
-            apa_reference += f", {publisher}"
-        apa_reference += "."
-        return apa_reference
-
-    # Artiklar och andra källor
     source = latex_converter.latex_to_text(
-        entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
+        entry.get("booktitle", entry.get("journaltitle", entry.get("journal", "")))
     )
-    volume = entry.get("volume", "")
-    number = entry.get("number", "")
+    editor_raw = latex_converter.latex_to_text(entry.get("editor", ""))
+    editors = []
+    if editor_raw:
+        for editor in editor_raw.split(" and "):
+            names = editor.split(", ")
+            if len(names) == 2:
+                last_name, first_names = names
+                initials = "".join([f"{name[0].upper()}." for name in first_names.split()])
+                editors.append(f"{last_name}, {initials}")
+    if editors:
+        editors_text = " (eds.)" if len(editors) > 1 else " (ed.)"
+        editors = f"In {', '.join(editors)}{editors_text}"
+
+    # Förlag och ort
+    publisher = latex_converter.latex_to_text(entry.get("publisher", ""))
+    location = latex_converter.latex_to_text(entry.get("location", ""))
+
+    # Sidor
     pages = entry.get("pages", "").replace("--", "–")
     if pages:
         pages = f"pp. {pages}"
+
+    # DOI
     doi = entry.get("doi", "")
     if doi and not doi.startswith("https://doi.org/"):
         doi = f"https://doi.org/{doi}"
 
-    apa_reference = f"{authors} ({year}). {title}."
-    if source:
-        apa_reference += f" *{source}*"
-    if volume:
-        apa_reference += f", {volume}"
-        if number:
-            apa_reference += f"({number})"
-    if pages:
-        apa_reference += f", {pages}"
-    apa_reference += "."
+    # Bygg referensen
+    apa_reference = f"{authors} ({year})."
+    if entry_type == "book":
+        # Endast för `@book` entries - kursivera titeln
+        apa_reference += f" *{title}*."
+        if location and publisher:
+            apa_reference += f" {location}: {publisher}."
+        elif publisher:
+            apa_reference += f" {publisher}."
+        elif location:
+            apa_reference += f" {location}."
+    else:
+        # För andra typer av entries
+        apa_reference += f" {title}."
+        if editors:
+            apa_reference += f" {editors}"
+        if source:
+            apa_reference += f" *{source}*"
+        if pages:
+            apa_reference += f", {pages}."
+        if location and publisher:
+            apa_reference += f" {location}: {publisher}."
+        elif publisher:
+            apa_reference += f" {publisher}."
+        elif location:
+            apa_reference += f" {location}."
     if doi:
         apa_reference += f" doi: {doi}"
 
