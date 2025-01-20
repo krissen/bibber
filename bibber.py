@@ -6,25 +6,57 @@ import sys
 
 import bibtexparser
 import pyperclip
+from bibtexparser.bparser import BibTexParser
+
+# from bibtexparser.customization import homogenize_latex
 from fuzzywuzzy import process
 from prompt_toolkit import prompt
 
 # Global variable to hold BibTeX data
 bib_data = None
 
+DEBUG_MODE = "--debug" in sys.argv  # Check if debug mode is enabled
+
 
 # Load BibTeX file
 def load_bibtex(file_path):
     global bib_data
     file_path = os.path.expanduser(file_path)  # Expand '~' to full path
+
+    # Configure parser to include all entry types
+    parser = BibTexParser(common_strings=True)  # Handle LaTeX symbols
+    parser.ignore_nonstandard_types = False  # Ensure non-standard types are included
+    parser.homogenize_fields = False  # Prevent loss of any fields
+
     try:
         with open(file_path, "r") as bibfile:
-            bib_data = bibtexparser.load(bibfile)
+            bib_data = bibtexparser.load(bibfile, parser=parser)
+
+        # Log loaded entries if debug mode is enabled
+        if DEBUG_MODE:
+            for entry in bib_data.entries:
+                entry_type = entry.get("ENTRYTYPE", "unknown")
+                print(
+                    f"Loaded entry type: {entry_type}, title: {entry.get('title', 'Untitled')}"
+                )
+
         print(f"Loaded {len(bib_data.entries)} entries from {file_path}.")
     except FileNotFoundError:
         print(f"Error: File {file_path} not found.")
     except Exception as e:
         print(f"An error occurred: {e}")
+
+
+# Logga alla inlästa entries
+def log_loaded_entries():
+    if bib_data is None:
+        print("No BibTeX data loaded.")
+        return
+    print("\nLoaded entries:")
+    for i, entry in enumerate(bib_data.entries, start=1):
+        print(
+            f"[{i}] Type: {entry.get('ENTRYTYPE', 'unknown')}, Title: {entry.get('title', 'Untitled')}"
+        )
 
 
 # Search BibTeX entries
@@ -61,18 +93,20 @@ def show_entry(index):
         print("Invalid entry index.")
 
 
-# Generate APA reference
+# Generate APA reference with support for non-standard types
+# Generate APA reference with full support for all entry types
 def generate_apa(entry):
     authors = entry.get("author", "Unknown Author").replace(" and ", ", ")
     year = entry.get("year", "n.d.")
     title = entry.get("title", "Untitled")
-    journal = entry.get("journal", "")
-    volume = entry.get("volume", "")
-    number = entry.get("number", "")
-    pages = entry.get("pages", "")
-    doi = entry.get("doi", "")
+    entry_type = entry.get("ENTRYTYPE", "generic").capitalize()
+    source = entry.get("journal", entry.get("booktitle", entry.get("howpublished", "")))
 
-    apa = f"{authors} ({year}). {title}. {journal}, {volume}({number}), {pages}. {doi}"
+    apa = f"{authors} ({year}). {title}."
+    if source:
+        apa += f" {source}."
+    apa += f" [Type: {entry_type}]"
+
     print("\nAPA Reference:")
     print(apa)
     return apa
@@ -90,8 +124,8 @@ def interactive_shell():
     print("BibTeX Interactive Shell")
     print("Commands: load, search, show, format, copy, exit")
 
-    # Kontrollera om fil har angivits som argument
-    if len(sys.argv) > 1:
+    # Check if a file is passed as an argument
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
         initial_file = os.path.expanduser(sys.argv[1])
         if os.path.exists(initial_file):
             load_bibtex(initial_file)
@@ -99,7 +133,7 @@ def interactive_shell():
             print(f"Error: File {initial_file} not found.")
 
     while True:
-        command = prompt("Command > ")
+        command = input("Command > ").strip()
         args = command.split()
         if not args:
             continue
