@@ -38,15 +38,15 @@ def safe_latex_to_text(latex_str):
 
 
 def search_entries(query):
-    """Search for entries and display results."""
+    """Sök efter poster och visa resultat."""
     global search_results
     if not bib_data:
-        print("No BibTeX file loaded. Please load a file first.")
+        print("Ingen BibTeX-fil har laddats. Ladda en fil först.")
         return
 
     query_terms = [term.lower() for term in query.split() if term.lower() != "--debug"]
     if DEBUG_MODE:
-        print(f"Debug: Cleaned query terms: {query_terms}")
+        print(f"Debug: Rensade söktermer: {query_terms}")
     scored_entries = []
 
     # Process entries parallellt
@@ -69,42 +69,40 @@ def search_entries(query):
         exact_matches = 0
         fuzzy_scores = []
         for term in query_terms:
-            if term.isdigit():  # Handle year-specific terms
+            if term.isdigit():  # Hantera årsspecifika termer
                 year = bib_data[list(bib_data.keys())[idx]].get("year", "")
                 if term == year:
                     exact_matches += 1
                     if DEBUG_MODE:
-                        print(f"Debug: Exact match found for year '{term}' in entry '{idx}'")
+                        print(f"Debug: Exakt match för år '{term}' i post '{idx}'")
                 else:
                     fuzzy_score = fuzz.partial_ratio(term, year) / 100
                     fuzzy_scores.append(fuzzy_score)
                     if DEBUG_MODE:
-                        print(f"Debug: Fuzzy match score for year '{term}': {fuzzy_score * 100}")
+                        print(f"Debug: Fuzzy träffprocent för år '{term}': {fuzzy_score * 100}")
             elif term in combined_text_lower:
                 exact_matches += 1
                 if DEBUG_MODE:
-                    print(f"Debug: Exact match found for term '{term}'")
+                    print(f"Debug: Exakt match för term '{term}'")
             else:
                 fuzzy_score = fuzz.partial_ratio(term, combined_text_lower) / 100
                 fuzzy_scores.append(fuzzy_score)
                 if DEBUG_MODE:
-                    print(
-                        f"Debug: Fuzzy match score for term '{term}': {fuzzy_score * 100}"
-                    )
+                    print(f"Debug: Fuzzy träffprocent för term '{term}': {fuzzy_score * 100}")
 
         exact_match_score = (exact_matches / len(query_terms)) * 100
         fuzzy_match_score = (sum(fuzzy_scores) / len(query_terms)) * 100
         total_score = exact_match_score + fuzzy_match_score
 
         if DEBUG_MODE:
-            print(f"Debug: Exact match score: {exact_match_score}")
-            print(f"Debug: Fuzzy match score: {fuzzy_match_score}")
-            print(f"Debug: Total score: {total_score}")
+            print(f"Debug: Exakt träffpoäng: {exact_match_score}")
+            print(f"Debug: Fuzzy träffpoäng: {fuzzy_match_score}")
+            print(f"Debug: Total poäng: {total_score}")
 
         entry = list(bib_data.values())[idx]
         year = sanitize_year(entry.get("year", "0"))
-        authors = safe_latex_to_text(entry.get("author", "Unknown Author"))
-        title = safe_latex_to_text(entry.get("title", "Untitled"))
+        authors = safe_latex_to_text(entry.get("author", "Okänd författare"))
+        title = safe_latex_to_text(entry.get("title", "Saknar titel"))
         source = safe_latex_to_text(
             entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
         )
@@ -125,14 +123,14 @@ def search_entries(query):
 
     # Visa resultaten
     search_results = scored_entries[:5]
-    print("\nSearch Results:")
+    print("\nSökresultat:\n")
     for i, result in enumerate(search_results):
         source_display = result["source"]
         print(
             f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}."
             + (f" {source_display}" if source_display else "")
         )
-        print(f"    Match: {result['score']:.1f}%")
+        print(f"    Träff: {result['score']:.1f}%\n")
 
 
 def process_combined_fields(entry):
@@ -313,8 +311,8 @@ def generate_apa(entry):
 
 def interactive_shell():
     """Interaktivt gränssnitt för BibTeX-hantering."""
-    print("Interaktivt BibTeX-gränssnitt")
-    print("Kommandon: ladda, sök, kopiera, avsluta")
+    print("\nInteraktivt BibTeX-gränssnitt")
+    print("Kommandon: ladda, sök, kopiera, avsluta\n")
 
     while True:
         try:
@@ -331,49 +329,47 @@ def interactive_shell():
                     result = search_results[index]
                     entry = list(bib_data.values())[result["idx"]]
                     apa_reference = generate_apa(entry)
-                    print(apa_reference)
-                    print()
+                    print(f"\n{apa_reference}\n")
                     copy_to_clipboard(apa_reference)
                     continue
                 else:
-                    print("Ogiltigt index. Ange en siffra mellan 1 och 5.")
+                    print("Ogiltigt index. Ange en siffra mellan 1 och 5.\n")
 
             if cmd in ["ladda", "load"]:
                 if len(args) < 2:
-                    print("Användning: ladda <filväg>")
+                    print("Användning: ladda <filväg>\n")
                 else:
                     load_bibtex(args[1])
 
             elif cmd in ["sök", "search"]:
                 if len(args) < 2:
-                    print("Användning: sök <fråga>")
+                    print("Användning: sök <fråga>\n")
                 else:
                     search_entries(" ".join(args[1:]))
 
             elif cmd in ["kopiera", "copy"]:
                 if len(args) < 2 or not args[1].isdigit():
-                    print("Användning: kopiera <index>")
+                    print("Användning: kopiera <index>\n")
                 else:
                     index = int(args[1]) - 1
                     if 0 <= index < len(search_results):
                         result = search_results[index]
                         entry = list(bib_data.values())[result["idx"]]
                         apa_reference = generate_apa(entry)
-                        print(apa_reference)
-                        print()
+                        print(f"\n{apa_reference}\n")
                         copy_to_clipboard(apa_reference)
                     else:
-                        print("Ogiltigt index. Ange en siffra mellan 1 och 5.")
+                        print("Ogiltigt index. Ange en siffra mellan 1 och 5.\n")
 
             elif cmd in ["avsluta", "quit", "exit"]:
-                print("Avslutar...")
+                print("Avslutar...\n")
                 break
 
             else:
-                print("Okänt kommando.")
+                print("Okänt kommando.\n")
 
         except (KeyboardInterrupt, EOFError):
-            print("\nAvslutar...")
+            print("\nAvslutar...\n")
             break
 
 
