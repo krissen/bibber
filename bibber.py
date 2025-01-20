@@ -239,6 +239,8 @@ def load_bibtex(file_path):
 def generate_apa(entry):
     """Generate APA 7-style reference."""
     latex_converter = LatexNodes2Text()
+
+    # Författare
     authors_raw = latex_converter.latex_to_text(entry.get("author", "Unknown Author"))
     authors = []
     for author in authors_raw.split(" and "):
@@ -249,10 +251,14 @@ def generate_apa(entry):
             authors.append(f"{last_name}, {initials}")
     authors = " & ".join(authors)
 
+    # År
     year = entry.get("year", "n.d.")
+
+    # Titel
     title = latex_converter.latex_to_text(entry.get("title", "Untitled"))
     title = title[0].upper() + title[1:] if title else "Untitled"
 
+    # Kontrollera om det är en avhandling
     entry_type = entry.get("entrytype", "").lower()
     if DEBUG_MODE:
         print(f"Debug: Entry type: {entry_type}")
@@ -261,10 +267,10 @@ def generate_apa(entry):
         dissertation_type = (
             "Doctoral dissertation" if entry_type == "phdthesis" else "Master’s thesis"
         )
-        institution = entry.get(
-            "institution", entry.get("school", "Unknown institution")
+        institution = latex_converter.latex_to_text(
+            entry.get("institution", entry.get("school", "Unknown institution"))
         )
-        publisher = entry.get("publisher", "")
+        publisher = latex_converter.latex_to_text(entry.get("publisher", ""))
         if DEBUG_MODE:
             print(f"Debug: Institution: {institution}, Publisher: {publisher}")
 
@@ -276,6 +282,7 @@ def generate_apa(entry):
         apa_reference += "."
         return apa_reference
 
+    # Artiklar och andra källor
     source = latex_converter.latex_to_text(
         entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
     )
@@ -305,33 +312,21 @@ def generate_apa(entry):
 
 
 def interactive_shell():
-    """Interactive shell for BibTeX management."""
-    print("BibTeX Interactive Shell")
-    print("Commands: load, search, copy, exit")
+    """Interaktivt gränssnitt för BibTeX-hantering."""
+    print("Interaktivt BibTeX-gränssnitt")
+    print("Kommandon: ladda, sök, kopiera, avsluta")
+
     while True:
-        command = prompt("Command > ").strip()
-        if not command:
-            continue
-        args = command.split()
-        cmd = args[0].lower()
+        try:
+            command = prompt("Kommando > ").strip()
+            if not command:
+                continue
+            args = command.split()
+            cmd = args[0].lower()
 
-        if cmd == "load":
-            if len(args) < 2:
-                print("Usage: load <file_path>")
-            else:
-                load_bibtex(args[1])
-
-        elif cmd == "search":
-            if len(args) < 2:
-                print("Usage: search <query>")
-            else:
-                search_entries(" ".join(args[1:]))
-
-        elif cmd == "copy":
-            if len(args) < 2 or not args[1].isdigit():
-                print("Usage: copy <index>")
-            else:
-                index = int(args[1]) - 1
+            # Om användaren anger bara en siffra efter en sökning, tolka som kopiera
+            if cmd.isdigit() and len(search_results) > 0:
+                index = int(cmd) - 1
                 if 0 <= index < len(search_results):
                     result = search_results[index]
                     entry = list(bib_data.values())[result["idx"]]
@@ -339,15 +334,47 @@ def interactive_shell():
                     print(apa_reference)
                     print()
                     copy_to_clipboard(apa_reference)
+                    continue
                 else:
-                    print("Invalid search result index.")
+                    print("Ogiltigt index. Ange en siffra mellan 1 och 5.")
 
-        elif cmd == "exit":
-            print("Exiting...")
+            if cmd in ["ladda", "load"]:
+                if len(args) < 2:
+                    print("Användning: ladda <filväg>")
+                else:
+                    load_bibtex(args[1])
+
+            elif cmd in ["sök", "search"]:
+                if len(args) < 2:
+                    print("Användning: sök <fråga>")
+                else:
+                    search_entries(" ".join(args[1:]))
+
+            elif cmd in ["kopiera", "copy"]:
+                if len(args) < 2 or not args[1].isdigit():
+                    print("Användning: kopiera <index>")
+                else:
+                    index = int(args[1]) - 1
+                    if 0 <= index < len(search_results):
+                        result = search_results[index]
+                        entry = list(bib_data.values())[result["idx"]]
+                        apa_reference = generate_apa(entry)
+                        print(apa_reference)
+                        print()
+                        copy_to_clipboard(apa_reference)
+                    else:
+                        print("Ogiltigt index. Ange en siffra mellan 1 och 5.")
+
+            elif cmd in ["avsluta", "quit", "exit"]:
+                print("Avslutar...")
+                break
+
+            else:
+                print("Okänt kommando.")
+
+        except (KeyboardInterrupt, EOFError):
+            print("\nAvslutar...")
             break
-
-        else:
-            print("Unknown command.")
 
 
 if __name__ == "__main__":
