@@ -1,11 +1,9 @@
 #!/usr/bin/env python
 # coding=utf8
-
 import collections
 import collections.abc
-
-collections.Iterable = collections.abc.Iterable
-
+import hashlib
+import json
 import os
 import sys
 import time
@@ -19,58 +17,138 @@ from fuzzywuzzy import fuzz
 from prompt_toolkit import prompt
 from pylatexenc.latex2text import LatexNodes2Text
 
+collections.Iterable = collections.abc.Iterable
+
 # Global variables
-bib_data = None  # BibTeX data
-search_results = []  # Latest search results
-DEBUG_MODE = "--debug" in sys.argv  # Debug flag
+bib_data = None
+search_results = []
+DEBUG_MODE = "--debug" in sys.argv
+CACHE_DIR = os.path.expanduser("~/.cache/bibber/")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-def load_bibtex(file_path):
-    """Load and detexify a BibTeX file."""
-    global bib_data
-    file_path = os.path.expanduser(file_path)
-    latex_converter = LatexNodes2Text()
-
+def safe_latex_to_text(latex_str):
+    """Safely convert LaTeX to text."""
     try:
-        start_time = time.time()
-
-        with open(file_path, "r") as bibfile:
-            # Parse the BibTeX file
-            parser = biblib.bib.Parser()
-            parsed_db = parser.parse(bibfile, log_fp=sys.stderr).get_entries()
-            bib_data = biblib.bib.resolve_crossrefs(parsed_db)
-
-        print(f"File loading took {time.time() - start_time:.2f} seconds.")
-
-        # Fields to detexify
-        fields_to_process = ["title", "author", "editor", "journal", "booktitle"]
-
-        def detexify_entry(entry):
-            """Detexify specific fields of a single BibTeX entry."""
-            for field in fields_to_process:
-                if field in entry:
-                    try:
-                        entry[field] = biblib.algo.tex_to_unicode(entry[field])
-                    except biblib.messages.InputError:
-                        entry[field] = latex_converter.latex_to_text(entry[field])
-            return entry
-
-        # Parallel detexify all entries
-        with ThreadPoolExecutor() as executor:
-            bib_data = dict(
-                zip(
-                    bib_data.keys(),
-                    executor.map(detexify_entry, bib_data.values()),
-                )
-            )
-
-        print(f"Loaded {len(bib_data)} entries from {file_path}.")
-    except FileNotFoundError:
-        print(f"Error: File {file_path} not found.")
-    except biblib.messages.InputError as e:
-        print(f"BibTeX parsing error: {e}")
+        return LatexNodes2Text().latex_to_text(latex_str)
     except Exception as e:
-        print(f"An error occurred: {e}")
+        if DEBUG_MODE:
+            print(f"Debug: Failed to process LaTeX: {latex_str}. Error: {e}")
+        return latex_str or ""
+
+
+def search_entries(query):
+    """Search for entries and display results."""
+    global search_results
+    if not bib_data:
+        print("No BibTeX file loaded. Please load a file first.")
+        return
+
+    query_terms = [term.lower() for term in query.split() if term.lower() != "--debug"]
+    if DEBUG_MODE:
+        print(f"Debug: Cleaned query terms: {query_terms}")
+    scored_entries = []
+
+    # Process entries parallellt
+    with ThreadPoolExecutor() as executor:
+        processed_entries = list(
+            executor.map(
+                lambda entry: (
+                    entry[0],
+                    safe_latex_to_text(entry[1].get("title", "")) + " " +
+                    safe_latex_to_text(entry[1].get("author", "")) + " " +
+                    safe_latex_to_text(entry[1].get("journaltitle", entry[1].get("journal", entry[1].get("booktitle", ""))))
+                ),
+                enumerate(bib_data.values()),
+            )
+        )
+
+    for idx, combined_text in processed_entries:
+        combined_text_lower = combined_text.lower()
+
+        exact_matches = 0
+        fuzzy_scores = []
+        for term in query_terms:
+            if term.isdigit():  # Handle year-specific terms
+                year = bib_data[list(bib_data.keys())[idx]].get("year", "")
+                if term == year:
+                    exact_matches += 1
+                    if DEBUG_MODE:
+                        print(f"Debug: Exact match found for year '{term}' in entry '{idx}'")
+                else:
+                    fuzzy_score = fuzz.partial_ratio(term, year) / 100
+                    fuzzy_scores.append(fuzzy_score)
+                    if DEBUG_MODE:
+                        print(f"Debug: Fuzzy match score for year '{term}': {fuzzy_score * 100}")
+            elif term in combined_text_lower:
+                exact_matches += 1
+                if DEBUG_MODE:
+                    print(f"Debug: Exact match found for term '{term}'")
+            else:
+                fuzzy_score = fuzz.partial_ratio(term, combined_text_lower) / 100
+                fuzzy_scores.append(fuzzy_score)
+                if DEBUG_MODE:
+                    print(
+                        f"Debug: Fuzzy match score for term '{term}': {fuzzy_score * 100}"
+                    )
+
+        exact_match_score = (exact_matches / len(query_terms)) * 100
+        fuzzy_match_score = (sum(fuzzy_scores) / len(query_terms)) * 100
+        total_score = exact_match_score + fuzzy_match_score
+
+        if DEBUG_MODE:
+            print(f"Debug: Exact match score: {exact_match_score}")
+            print(f"Debug: Fuzzy match score: {fuzzy_match_score}")
+            print(f"Debug: Total score: {total_score}")
+
+        entry = list(bib_data.values())[idx]
+        year = sanitize_year(entry.get("year", "0"))
+        authors = safe_latex_to_text(entry.get("author", "Unknown Author"))
+        title = safe_latex_to_text(entry.get("title", "Untitled"))
+        source = safe_latex_to_text(
+            entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
+        )
+
+        scored_entries.append(
+            {
+                "idx": idx,
+                "score": total_score,
+                "year": year,
+                "authors": authors,
+                "title": title,
+                "source": source,
+            }
+        )
+
+    # Sortera efter poäng och år
+    scored_entries.sort(key=lambda x: (x["score"], x["year"]), reverse=True)
+
+    # Visa resultaten
+    search_results = scored_entries[:5]
+    print("\nSearch Results:")
+    for i, result in enumerate(search_results):
+        source_display = result["source"]
+        print(
+            f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}."
+            + (f" {source_display}" if source_display else "")
+        )
+        print(f"    Match: {result['score']:.1f}%")
+
+
+def process_combined_fields(entry):
+    """Combine relevant fields for search."""
+    fields = ["title", "author", "editor", "journal", "booktitle"]
+    combined_text = " ".join(entry.get(field, "").lower() for field in fields)
+    return combined_text
+
+
+def copy_to_clipboard(reference):
+    """Copy a reference to the clipboard."""
+    try:
+        pyperclip.copy(reference)
+        print("Reference copied to clipboard.")
+    except Exception as e:
+        print(f"Error copying to clipboard: {e}")
 
 
 def sanitize_year(year):
@@ -83,96 +161,151 @@ def sanitize_year(year):
         return 0
 
 
-def process_combined_fields(entry):
-    """Combine fields for search."""
-    fields = ["title", "author", "editor", "journal", "booktitle"]
-    combined_text = " ".join(entry.get(field, "").lower() for field in fields)
-    return combined_text
+def md5sum(file_path):
+    """Generate MD5 checksum for a file."""
+    with open(file_path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
 
 
-def search_entries(query):
-    """Search for entries and display results."""
-    global search_results
-    if not bib_data:
-        print("No BibTeX file loaded. Please load a file first.")
+def load_from_cache(cache_file):
+    """Load cached data if available."""
+    try:
+        with open(cache_file, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_to_cache(data, cache_file):
+    """Save data to cache."""
+    with open(cache_file, "w") as f:
+        json.dump(data, f)
+
+
+def extract_entrytypes(file_path):
+    """Extract entry types manually from the BibTeX file."""
+    entry_types = {}
+    with open(file_path, "r") as file:
+        for line in file:
+            line = line.strip()
+            if line.startswith("@") and "{" in line:
+                entry_type, rest = line[1:].split("{", 1)
+                key = rest.split(",", 1)[0].strip()
+                entry_types[key.lower()] = entry_type.lower()
+    return entry_types
+
+
+def load_bibtex(file_path):
+    """Load a BibTeX file and detexify its entries."""
+    global bib_data
+    file_path = os.path.expanduser(file_path)
+    cache_file = os.path.join(CACHE_DIR, f"{md5sum(file_path)}.json")
+
+    cached_data = load_from_cache(cache_file)
+    if cached_data:
+        if DEBUG_MODE:
+            print(f"Debug: Loaded from cache: {cache_file}")
+        bib_data = cached_data
         return
 
-    query_terms = query.lower().split()
-    scored_entries = []
+    latex_converter = LatexNodes2Text()
 
-    # Process entries in parallel
-    with ThreadPoolExecutor() as executor:
-        processed_entries = list(
-            executor.map(
-                lambda entry: (entry[0], process_combined_fields(entry[1])),
-                enumerate(bib_data.values()),
-            )
-        )
+    try:
+        start_time = time.time()
+        with open(file_path, "r") as bibfile:
+            parser = biblib.bib.Parser()
+            parsed_db = parser.parse(bibfile, log_fp=sys.stderr).get_entries()
+            bib_data = biblib.bib.resolve_crossrefs(parsed_db)
 
-    # Calculate scores and collect results
-    for idx, combined_text in processed_entries:
-        term_matches = sum(1 for term in query_terms if term in combined_text)
-        fuzzy_score = fuzz.partial_ratio(query.lower(), combined_text)
-        total_score = max(fuzzy_score, term_matches * (100 // len(query_terms)))
+        entry_types = extract_entrytypes(file_path)
+        for key, entry in bib_data.items():
+            if entry.get("entrytype", "unknown") == "unknown":
+                entry["entrytype"] = entry_types.get(key.lower(), "unknown")
 
-        # Collect details for output
-        entry = list(bib_data.values())[idx]
-        year = entry.get("year", "n.d.")
-        authors = entry.get("author", "Unknown Author")
-        title = entry.get("title", "Untitled")
-        source = entry.get("journal", entry.get("booktitle", "Unknown source"))
+        save_to_cache(bib_data, cache_file)
 
-        scored_entries.append(
-            {
-                "idx": idx,
-                "score": total_score,
-                "authors": authors,
-                "year": year,
-                "title": title,
-                "source": source,
-            }
-        )
+        if DEBUG_MODE:
+            for key, entry in bib_data.items():
+                print(
+                    f"Debug: Key: {key}, Entry type: {entry.get('entrytype', 'unknown')}"
+                )
 
-    # Sort by score and year
-    scored_entries.sort(
-        key=lambda x: (x["score"], sanitize_year(x["year"])), reverse=True
-    )
-
-    # Display results
-    search_results = scored_entries[:5]
-    print("\nSearch Results:")
-    for i, result in enumerate(search_results):
-        print(
-            f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}. {result['source']}"
-        )
-        print(f"    Match: {result['score']}%")
+        if DEBUG_MODE:
+            print(f"Debug: File loading took {time.time() - start_time:.2f} seconds.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
 def generate_apa(entry):
-    """Generate APA-style reference."""
+    """Generate APA 7-style reference."""
     latex_converter = LatexNodes2Text()
-    authors = latex_converter.latex_to_text(entry.get("author", "Unknown Author"))
+    authors_raw = latex_converter.latex_to_text(entry.get("author", "Unknown Author"))
+    authors = []
+    for author in authors_raw.split(" and "):
+        names = author.split(", ")
+        if len(names) == 2:
+            last_name, first_names = names
+            initials = "".join([f"{name[0].upper()}." for name in first_names.split()])
+            authors.append(f"{last_name}, {initials}")
+    authors = " & ".join(authors)
+
     year = entry.get("year", "n.d.")
     title = latex_converter.latex_to_text(entry.get("title", "Untitled"))
+    title = title[0].upper() + title[1:] if title else "Untitled"
+
+    entry_type = entry.get("entrytype", "").lower()
+    if DEBUG_MODE:
+        print(f"Debug: Entry type: {entry_type}")
+
+    if entry_type in {"phdthesis", "mastersthesis"}:
+        dissertation_type = (
+            "Doctoral dissertation" if entry_type == "phdthesis" else "Master’s thesis"
+        )
+        institution = entry.get(
+            "institution", entry.get("school", "Unknown institution")
+        )
+        publisher = entry.get("publisher", "")
+        if DEBUG_MODE:
+            print(f"Debug: Institution: {institution}, Publisher: {publisher}")
+
+        apa_reference = (
+            f"{authors} ({year}). *{title}* ({dissertation_type}). {institution}"
+        )
+        if publisher and publisher != institution:
+            apa_reference += f", {publisher}"
+        apa_reference += "."
+        return apa_reference
+
     source = latex_converter.latex_to_text(
-        entry.get("booktitle", entry.get("journal", "Unknown source"))
+        entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
     )
+    volume = entry.get("volume", "")
+    number = entry.get("number", "")
+    pages = entry.get("pages", "").replace("--", "–")
+    if pages:
+        pages = f"pp. {pages}"
+    doi = entry.get("doi", "")
+    if doi and not doi.startswith("https://doi.org/"):
+        doi = f"https://doi.org/{doi}"
+
     apa_reference = f"{authors} ({year}). {title}."
     if source:
-        apa_reference += f" {source}"
-    print("\nAPA Reference:")
-    print(apa_reference)
-    return apa_reference
+        apa_reference += f" *{source}*"
+    if volume:
+        apa_reference += f", {volume}"
+        if number:
+            apa_reference += f"({number})"
+    if pages:
+        apa_reference += f", {pages}"
+    apa_reference += "."
+    if doi:
+        apa_reference += f" doi: {doi}"
 
-
-def copy_to_clipboard(reference):
-    """Copy a reference to the clipboard."""
-    pyperclip.copy(reference)
-    print("Reference copied to clipboard.")
+    return " ".join(apa_reference.split())
 
 
 def interactive_shell():
-    """Start an interactive shell for BibTeX management."""
+    """Interactive shell for BibTeX management."""
     print("BibTeX Interactive Shell")
     print("Commands: load, search, copy, exit")
     while True:
@@ -203,6 +336,8 @@ def interactive_shell():
                     result = search_results[index]
                     entry = list(bib_data.values())[result["idx"]]
                     apa_reference = generate_apa(entry)
+                    print(apa_reference)
+                    print()
                     copy_to_clipboard(apa_reference)
                 else:
                     print("Invalid search result index.")
@@ -216,18 +351,14 @@ def interactive_shell():
 
 
 if __name__ == "__main__":
-    # Parse arguments
     args = sys.argv[1:]
     bib_file = next((arg for arg in args if os.path.isfile(arg)), None)
     query = " ".join(arg for arg in args if not os.path.isfile(arg))
 
-    # Load BibTeX file
     if bib_file:
         load_bibtex(bib_file)
 
-    # Perform search if a query is provided
     if query and bib_data:
         search_entries(query)
 
-    # Start interactive shell
     interactive_shell()
