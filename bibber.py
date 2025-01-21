@@ -27,6 +27,27 @@ CACHE_DIR = os.path.expanduser("~/.cache/bibber/")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
+def save_last_used_file(file_path):
+    """Spara den senast använda BibTeX-filen i cache."""
+    last_used_file = os.path.join(CACHE_DIR, "last_used_bibfile.json")
+    with open(last_used_file, "w") as f:
+        json.dump({"last_used": file_path}, f)
+
+
+def get_last_used_file():
+    """Hämta den senast använda BibTeX-filen från cache."""
+    last_used_file = os.path.join(CACHE_DIR, "last_used_bibfile.json")
+    if os.path.exists(last_used_file):
+        try:
+            with open(last_used_file, "r") as f:
+                data = json.load(f)
+                return data.get("last_used", None)
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"Debug: Kunde inte läsa senast använda filen. Fel: {e}")
+    return None
+
+
 def safe_latex_to_text(latex_str):
     """Safely convert LaTeX to text."""
     try:
@@ -55,9 +76,20 @@ def search_entries(query):
             executor.map(
                 lambda entry: (
                     entry[0],
-                    safe_latex_to_text(entry[1].get("title", "")) + " " +
-                    safe_latex_to_text(entry[1].get("author", entry[1].get("editor", "Okänd författare"))) + " " +
-                    safe_latex_to_text(entry[1].get("journaltitle", entry[1].get("journal", entry[1].get("booktitle", ""))))
+                    safe_latex_to_text(entry[1].get("title", ""))
+                    + " "
+                    + safe_latex_to_text(
+                        entry[1].get(
+                            "author", entry[1].get("editor", "Okänd författare")
+                        )
+                    )
+                    + " "
+                    + safe_latex_to_text(
+                        entry[1].get(
+                            "journaltitle",
+                            entry[1].get("journal", entry[1].get("booktitle", "")),
+                        )
+                    ),
                 ),
                 enumerate(bib_data.values()),
             )
@@ -79,7 +111,9 @@ def search_entries(query):
                     fuzzy_score = fuzz.partial_ratio(term, year) / 100
                     fuzzy_scores.append(fuzzy_score)
                     if DEBUG_MODE:
-                        print(f"Debug: Fuzzy träffprocent för år '{term}': {fuzzy_score * 100}")
+                        print(
+                            f"Debug: Fuzzy träffprocent för år '{term}': {fuzzy_score * 100}"
+                        )
             elif term in combined_text_lower:
                 exact_matches += 1
                 if DEBUG_MODE:
@@ -88,7 +122,9 @@ def search_entries(query):
                 fuzzy_score = fuzz.partial_ratio(term, combined_text_lower) / 100
                 fuzzy_scores.append(fuzzy_score)
                 if DEBUG_MODE:
-                    print(f"Debug: Fuzzy träffprocent för term '{term}': {fuzzy_score * 100}")
+                    print(
+                        f"Debug: Fuzzy träffprocent för term '{term}': {fuzzy_score * 100}"
+                    )
 
         exact_match_score = (exact_matches / len(query_terms)) * 100
         fuzzy_match_score = (sum(fuzzy_scores) / len(query_terms)) * 100
@@ -118,7 +154,9 @@ def search_entries(query):
             source = ""
         else:
             source = safe_latex_to_text(
-                entry.get("journaltitle", entry.get("journal", entry.get("booktitle", "")))
+                entry.get(
+                    "journaltitle", entry.get("journal", entry.get("booktitle", ""))
+                )
             )
 
         scored_entries.append(
@@ -142,7 +180,9 @@ def search_entries(query):
         source_display = result["source"]
 
         # Konstruera referens utan onödiga punkter
-        reference = f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}"
+        reference = (
+            f"[{i + 1}] {result['authors']} ({result['year']}). {result['title']}"
+        )
         if source_display:
             reference += f". {source_display}"
         reference += "."  # Slutpunkt endast om värden finns
@@ -223,6 +263,7 @@ def load_bibtex(file_path):
         if DEBUG_MODE:
             print(f"Debug: Loaded from cache: {cache_file}")
         bib_data = cached_data
+        save_last_used_file(file_path)  # Spara som senast använda fil
         return
 
     latex_converter = LatexNodes2Text()
@@ -249,6 +290,7 @@ def load_bibtex(file_path):
 
         if DEBUG_MODE:
             print(f"Debug: File loading took {time.time() - start_time:.2f} seconds.")
+        save_last_used_file(file_path)  # Spara som senast använda fil
     except Exception as e:
         print(f"An error occurred: {e}")
 
@@ -261,7 +303,9 @@ def generate_apa(entry):
     authors_raw = latex_converter.latex_to_text(entry.get("author", ""))
     authors = []
     if not authors_raw:
-        authors_raw = latex_converter.latex_to_text(entry.get("editor", "Unknown Editor"))
+        authors_raw = latex_converter.latex_to_text(
+            entry.get("editor", "Unknown Editor")
+        )
         is_editor = True
     else:
         is_editor = False
@@ -300,7 +344,9 @@ def generate_apa(entry):
             names = editor.split(", ")
             if len(names) == 2:
                 last_name, first_names = names
-                initials = "".join([f"{name[0].upper()}." for name in first_names.split()])
+                initials = "".join(
+                    [f"{name[0].upper()}." for name in first_names.split()]
+                )
                 editors.append(f"{last_name}, {initials}")
     if editors:
         editors_text = " (eds.)" if len(editors) > 1 else " (ed.)"
@@ -420,6 +466,14 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     bib_file = next((arg for arg in args if os.path.isfile(arg)), None)
     query = " ".join(arg for arg in args if not os.path.isfile(arg))
+
+    if not bib_file:
+        bib_file = get_last_used_file()
+        if bib_file:
+            print(f"Laddar senast använda fil: {bib_file}")
+        else:
+            print("Ingen BibTeX-fil specificerad och ingen senast använd fil hittades.")
+            sys.exit(1)
 
     if bib_file:
         load_bibtex(bib_file)
