@@ -46,10 +46,10 @@ Usage:
   python bibber.py [options] [file.bib] [search terms]
 
 Options:
-  --debug      : debug-läge (mer utskrifter)
-  --help       : denna hjälp
+  --debug      : print debug information
+  --help       : this help text
 
-Interactive commands (English aliases):
+Interactive commands:
   load <file>    : Load .bib
   search <terms> : Standard search
   sc <terms> [n] : Compact search
@@ -58,7 +58,6 @@ Interactive commands (English aliases):
   help           : This help
   exit / quit    : Quit
 
-Swedish aliases also available in interactive mode.
 """)
     sys.exit(0)
 
@@ -186,157 +185,220 @@ def load_bibtex(file_path):
 # 4) En förenklad APA, tar hänsyn till LANGUAGE
 # -------------------------------------------------
 def generate_apa(entry):
+    """
+    En förenklad APA 7-funktion med särskild hantering för @inproceedings:
+      - Visar upp till 20 författare innan "et al." (enligt APA7)
+      - Tar med booktitle som konferensens namn
+      - Tar med howpublished (om existerar)
+    """
     from pylatexenc.latex2text import LatexNodes2Text
-    conv= LatexNodes2Text()
+    conv = LatexNodes2Text()
 
-    if LANGUAGE=="sv":
-        no_date="u.å."
-        single_ed=" (red.)"
-        multi_ed=" (red.)"
-        pages_label="s."
-        et_al="m.fl."
+    if LANGUAGE == "sv":
+        no_date   = "u.å."
+        single_ed = " (red.)"
+        multi_ed  = " (red.)"
+        pages_label = "s."
+        et_al_label = "m.fl."
     else:
-        no_date="n.d."
-        single_ed=" (ed.)"
-        multi_ed=" (eds.)"
-        pages_label="pp."
-        et_al="et al."
+        no_date   = "n.d."
+        single_ed = " (ed.)"
+        multi_ed  = " (eds.)"
+        pages_label = "pp."
+        et_al_label = "et al."
 
-    raw_auth= entry.get("author","")
-    is_editor=False
-    if not raw_auth:
-        raw_auth= entry.get("editor","Unknown Editor")
-        is_editor=True
-    auth_ltx= conv.latex_to_text(raw_auth)
+    raw_author = entry.get("author", "")
+    is_editor = False
+    if not raw_author:
+        # fallback på editor
+        raw_author = entry.get("editor", "Unknown Editor")
+        is_editor = True
 
-    splitted= auth_ltx.split(" and ")
-    authors=[]
+    # Kör latex->text
+    auth_ltx = conv.latex_to_text(raw_author)
+
+    # Splitta författare på " and "
+    splitted = [a.strip() for a in auth_ltx.split(" and ")]
+    authors = []
     for a in splitted:
-        parts=a.split(",")
-        if len(parts)==2:
-            ln= parts[0].strip()
-            fn= parts[1].split()
-            if fn:
-                init= fn[0][0].upper()+"."
-                authors.append(f"{ln}, {init}")
+        parts = a.split(",")
+        if len(parts) == 2:
+            ln = parts[0].strip()
+            fn = parts[1].split()
+            # Bygg initialer av alla förnamn
+            # ex. "Anne Siri" => "A.S."
+            initials = []
+            for ffn in fn:
+                if ffn:  # om ej tom
+                    initials.append(ffn[0].upper() + ".")
+            init_str = " ".join(initials)  # "A. S."
+            if init_str:
+                authors.append(f"{ln}, {init_str}")
             else:
                 authors.append(ln)
         else:
             authors.append(a.strip())
 
-    if len(authors)>3:
-        first=authors[0]
-        authors=[first, et_al]
+    # APA7 upp till 20 författare innan "et al."
+    if len(authors) > 20:
+        authors = authors[:19] + [et_al_label]
+    elif len(authors) > 3 and entry.get("entrytype","").lower() != "inproceedings":
+        # För t.ex. article, incollection, etc. => standard <=3
+        # men i inproceedings vill vi tillåta upp till 20
+        first = authors[0]
+        authors = [first, et_al_label]
 
     if is_editor:
-        if len(splitted)>1:
-            authors[-1]+= multi_ed
+        # om vi från början tog 'editor' => (ed.) / (eds.)
+        if len(splitted) > 1:
+            authors[-1] += multi_ed
         else:
-            authors[-1]+= single_ed
+            authors[-1] += single_ed
 
-    authors_str=", ".join(authors)
+    # Sätt ihop författarsträngen
+    authors_str = ", ".join(authors)
 
-    yr= entry.get("year","")
+    # År
+    yr = entry.get("year", "")
     if not yr:
-        dt= entry.get("date","")
-        if dt: yr= dt[:4]
+        dt = entry.get("date","")
+        if dt:
+            yr = dt[:4]
     if not yr:
-        yr=no_date
+        yr = no_date
 
-    title= conv.latex_to_text(entry.get("title","Untitled")).strip()
+    # Titel
+    title = conv.latex_to_text(entry.get("title","Untitled")).strip()
     if title:
-        title= title[0].upper()+ title[1:]
+        title = title[0].upper() + title[1:]
     else:
-        title="Untitled"
+        title = "Untitled"
 
-    pp= entry.get("pages","").replace("--","–")
+    # Sidor
+    pp = entry.get("pages","").replace("--","–")
     if pp:
-        if LANGUAGE=="sv":
-            # s. 12–14
-            pp=f"s. {pp}"
+        if LANGUAGE == "sv":
+            # "s. 12–14"
+            pp = f"s. {pp}"
         else:
             # eng
             if "–" in pp:
-                pp=f"{pages_label} {pp}"
+                pp = f"{pages_label} {pp}"  # ex "pp. 12–14"
             else:
-                pp=f"p. {pp}"
+                pp = f"p. {pp}"
 
-    doi= entry.get("doi","")
+    # DOI
+    doi = entry.get("doi","")
     if doi and not doi.startswith("https://doi.org/"):
-        doi="https://doi.org/"+doi
+        doi = "https://doi.org/" + doi
 
-    et= entry.get("entrytype","").lower()
-    loc= conv.latex_to_text(entry.get("location","")).strip()
-    pub= conv.latex_to_text(entry.get("publisher","")).strip()
+    # Ort, förlag
+    loc = conv.latex_to_text(entry.get("location","")).strip()
+    pub = conv.latex_to_text(entry.get("publisher","")).strip()
 
-    apa=f"{authors_str} ({yr}). {title}."
-    if et=="incollection":
-        # bok
-        bk= conv.latex_to_text(entry.get("booktitle","")).strip()
-        eds_= entry.get("editor","")
-        eds_ltx= conv.latex_to_text(eds_)
-        splitted_ed= eds_ltx.split(" and ")
-        # etc. (se tidigare implementation)
+    # entrytype
+    et = entry.get("entrytype","").lower()
 
-        if eds_ltx==auth_ltx:
+    # Börja bygga referens
+    apa = f"{authors_str} ({yr}). {title}."
+
+    # Hantering per entrytype
+    if et == "incollection":
+        # Bokkapitel
+        bk = conv.latex_to_text(entry.get("booktitle","")).strip()
+        raw_ed = entry.get("editor","")
+        ed_ltx = conv.latex_to_text(raw_ed)
+        splitted_ed = ed_ltx.split(" and ")
+        
+        if ed_ltx == auth_ltx:
             # Samma => skip
             if bk:
-                apa+= f" In *{bk}*"
+                apa += f" In *{bk}*"
                 if pp:
-                    apa+= f" ({pp})"
-            apa+="."
+                    apa += f" ({pp})"
+            apa += "."
         else:
-            if len(splitted_ed)==1:
-                apa+= f" In {splitted_ed[0]}{single_ed}"
-            elif len(splitted_ed)>1:
-                joined=", ".join(splitted_ed)
-                apa+= f" In {joined}{multi_ed}"
+            if len(splitted_ed) == 1:
+                apa += f" In {splitted_ed[0]}{single_ed}"
+            elif len(splitted_ed) > 1:
+                joined = ", ".join(splitted_ed)
+                apa += f" In {joined}{multi_ed}"
             if bk:
-                apa+= f", *{bk}*"
+                apa += f", *{bk}*"
             if pp:
-                apa+= f" ({pp})"
-            apa+="."
-
+                apa += f" ({pp})"
+            apa += "."
         if loc and pub:
-            apa+= f" {loc}: {pub}."
+            apa += f" {loc}: {pub}."
         elif pub:
-            apa+= f" {pub}."
+            apa += f" {pub}."
         elif loc:
-            apa+= f" {loc}."
-    elif et=="article":
-        j= conv.latex_to_text(entry.get("journaltitle", entry.get("journal",""))).strip()
+            apa += f" {loc}."
+
+    elif et == "article":
+        # Tidskriftsartikel
+        j = conv.latex_to_text(entry.get("journaltitle", entry.get("journal",""))).strip()
         if j:
-            apa+= f" *{j}*."
+            apa += f" *{j}*."
         if pp:
-            apa+= f" {pp}."
+            apa += f" {pp}."
         if loc and pub:
-            apa+= f" {loc}: {pub}."
+            apa += f" {loc}: {pub}."
         elif pub:
-            apa+= f" {pub}."
+            apa += f" {pub}."
         elif loc:
-            apa+= f" {loc}."
-    elif et=="book":
-        if loc and pub:
-            apa+= f" {loc}: {pub}."
-        elif pub:
-            apa+= f" {pub}."
-        elif loc:
-            apa+= f" {loc}."
-        if pp:
-            apa+= f" {pp}."
-    else:
-        if loc and pub:
-            apa+= f" {loc}: {pub}."
-        elif pub:
-            apa+= f" {pub}."
-        elif loc:
-            apa+= f" {loc}."
-        if pp:
-            apa+= f" {pp}."
+            apa += f" {loc}."
 
+    elif et == "book":
+        # Bok
+        if loc and pub:
+            apa += f" {loc}: {pub}."
+        elif pub:
+            apa += f" {pub}."
+        elif loc:
+            apa += f" {loc}."
+        if pp:
+            apa += f" {pp}."
+
+    elif et == "inproceedings":
+        # Konferensbidrag
+        bk = conv.latex_to_text(entry.get("booktitle","")).strip()
+        howp = conv.latex_to_text(entry.get("howpublished","")).strip()
+
+        # Ex: "Reflexivity reconsidered. In 17th Nordic Conference of Religious Education..., location,
+        #      howpublished, sidor, etc."
+        if bk:
+            apa += f" In *{bk}*."
+        if howp:
+            # T.ex. "Paper presented at..."
+            apa += f" {howp}."
+        if pp:
+            apa += f" {pp}."
+        # location + publisher
+        if loc and pub:
+            apa += f" {loc}: {pub}."
+        elif pub:
+            apa += f" {pub}."
+        elif loc:
+            apa += f" {loc}."
+
+    else:
+        # fallback
+        if loc and pub:
+            apa += f" {loc}: {pub}."
+        elif pub:
+            apa += f" {pub}."
+        elif loc:
+            apa += f" {loc}."
+        if pp:
+            apa += f" {pp}."
+
+    # eventuellt doi
     if doi:
-        apa+= f" doi: {doi}"
-    apa=" ".join(apa.split())
+        apa += f" doi: {doi}"
+
+    # städa dubbla mellanslag
+    apa = " ".join(apa.split())
     return apa
 
 # -------------------------------------------------
@@ -888,15 +950,27 @@ def _do_copy(index):
     copy_to_clipboard(apa)
 
 def _print_help():
-    print("""
-Commands (English + Swedish):
-  load <file> / ladda <fil>        : Load .bib
-  search <terms> / sök <termer>    : Standard search
-  sc <terms> [n] / sökc <termer> [antal] : Compact search
-  copy <index> / kopiera <index>   : Copy reference
-  lang <sv|en>                     : Switch language
-  help / hjälp                     : This help
-  exit / quit / avsluta            : Quit
+    if LANGUAGE=="sv":
+      print("""
+Kommandon:
+  ladda <fil>           : Ladda .bib
+  sök <termer>          : Standard sök
+  sc <termer> [antal]   : Kompakt sök
+  kopiera <index>       : Kopiera referens
+  lang <sv|en>          : Byt språk
+  hjälp                 : Denna hjälp
+  avsluta               : Avsluta
+""")
+    else:
+      print("""
+Commands:
+  load <file>           : Load .bib
+  search <terms>        : Standard search
+  sc <terms> [n]        : Compact search
+  copy <index>          : Copy reference
+  lang <sv|en>          : Switch language
+  help                  : This help
+  exit                  : Quit
 """)
 
 def interactive_shell():
