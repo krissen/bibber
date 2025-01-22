@@ -15,7 +15,14 @@ import biblib.messages
 import pyperclip
 from fuzzywuzzy import fuzz
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import (Float, FloatContainer, HSplit,
+                                              VSplit)
+from prompt_toolkit.widgets import Button, Dialog, Frame, Label, TextArea
 from pylatexenc.latex2text import LatexNodes2Text
 
 # -------------------------------------------------
@@ -33,6 +40,8 @@ DEBUG_MODE = ("--debug" in sys.argv)
 bib_data = None
 processed_entries_cache = None
 last_shown_results = []
+original_results = []  # Håller ursprungliga resultat innan filtrering
+
 
 LANGUAGE = "en"
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
@@ -104,7 +113,7 @@ def safe_latex_to_text(x):
 def copy_to_clipboard(txt):
     try:
         pyperclip.copy(txt)
-        print("Reference copied to clipboard.")
+        # print("Reference copied to clipboard.")
     except:
         pass
 
@@ -445,7 +454,8 @@ def search_entries(query):
             print(f"\nFler än 5 perfekta träffar ({len(perfects)}). Kompakt vy...\n")
         else:
             print(f"\nMore than 5 perfect matches ({len(perfects)}). Switching to compact view...\n")
-        search_entries_compact(query,25)
+        # search_entries_compact(query,25)
+        interactive_result_view_compact(scored, qterms)
         return
 
     last_shown_results= scored[:5]
@@ -910,7 +920,7 @@ def truncate_line_exact(line, query_terms, max_len=95, keep_start=10, keep_end=1
 # 7) Kompaktsök
 # -------------------------------------------------
 def search_entries_compact(query, max_results=10):
-    global last_shown_results
+    global last_shown_results, original_results
     if not bib_data:
         print("Ingen fil är laddad.")
         return
@@ -919,6 +929,8 @@ def search_entries_compact(query, max_results=10):
     scored= _search_and_score_entries(qterms)
     top= scored[:max_results]
     last_shown_results= top
+    original_results = top  # Spara ursprungliga resultat
+
 
     if LANGUAGE=="sv":
         print(f"\nSökresultat (kompakt vy, {max_results} rader):\n")
@@ -1069,6 +1081,276 @@ def interactive_shell():
             else:
                 print("\nExiting...\n")
             break
+
+# -------------------------------------------------
+# (NYTT) Interaktiv kompakt vy
+# -------------------------------------------------
+def interactive_result_view_compact(results, query_terms):
+    """
+    Visar en TUI-lik kompakt vy med *alla* resultat i scrollbar text.
+    - Enter => kopiera => popup => OK => stäng
+    - / => filterdialog
+    - pageup/pagedown => hel sida
+    - q => avbryt
+
+    Raderna genereras av build_compact_line(...), 
+    så vi behåller befintlig trunkering och format:
+      "[i] 100.0% | authors | year | title"
+    """
+
+    global original_results
+    original_results = results  # Spara de ursprungliga resultaten vid laddning
+
+    # Bygg stor text av alla results
+    lines = []
+    for i, r in enumerate(results):
+        line = build_compact_line(
+            index=i+1,
+            score=r["score"],
+            authors=r["authors"],
+            year=r["year"],
+            title=r["title"],
+            query_terms=query_terms,
+            max_len=COMPACT_MAX_CHARS
+        )
+        lines.append(line)
+
+    full_text = "\n".join(lines)
+
+    # Scrollbar + wrap_lines=False så vi kan se trunkerade rader
+    text_area = TextArea(
+        text=full_text,
+        scrollbar=True,
+        wrap_lines=False,
+        read_only=True
+    )
+
+    kb = KeyBindings()
+    floats = []
+
+    @kb.add("q")
+    def _(event):
+        event.app.exit()
+
+    @kb.add("enter")
+    def on_enter(event):
+        row_i = text_area.document.cursor_position_row
+        if 0 <= row_i < len(results):
+            # Kopiera
+            actual_idx = results[row_i]["idx"]
+            e = list(bib_data.values())[actual_idx]
+            apa = generate_apa(e)
+            copy_to_clipboard(apa)
+            # Visa popup
+            show_popup_dialog(apa, floats, text_area)
+
+    @kb.add("/")
+    def on_slash(event):
+        # Filtreringsdialog
+        show_filter_dialog(results, text_area, floats)
+
+    @kb.add("pageup")
+    def page_up(event):
+        w = text_area.window
+        info = w.render_info
+        if info:
+            page_size = info.window_height
+            new_val = max(0, w.vertical_scroll - page_size)
+            w.vertical_scroll = new_val
+
+    @kb.add("pagedown")
+    def page_down(event):
+        w = text_area.window
+        info = w.render_info
+        if info:
+            page_size = info.window_height
+            max_scroll = info.content_height - info.window_height
+            new_val = min(max_scroll, w.vertical_scroll + page_size)
+            w.vertical_scroll = new_val
+
+    frame = Frame(
+        text_area,
+        title="(Enter=copy, /=filter, PageUp/Down, q=quit)"
+    )
+
+    # floatcontainer => popup dialogs
+    root_container = FloatContainer(
+        content=frame,
+        floats=floats
+    )
+    layout = Layout(root_container)
+
+    app = Application(
+        layout=layout,
+        key_bindings=kb,
+        full_screen=True
+    )
+    app.run()
+
+
+def show_filter_dialog(results, text_area, floats_list):
+    """
+    Visar en modal dialog för att filtrera resultat.
+    """
+    input_box = TextArea(
+        text="",
+        multiline=False,  # Enkelradsinmatning
+        wrap_lines=False,
+    )
+
+    def apply_filter():
+        """
+        Filtrera resultat baserat på sökterm och uppdatera visningen.
+        """
+        query = input_box.text.lower().strip()
+        if not query:
+            text_area.text = "Inga träffar för filtret."
+            return
+
+        # Filtrera resultat baserat på query
+        filtered_results = [
+            r for r in original_results
+            if query in r["authors"].lower()
+            or query in r["title"].lower()
+            or query in r["year"].lower()
+        ]
+
+        if not filtered_results:
+            text_area.text = "Inga träffar för filtret."
+        else:
+            # Uppdatera visningen med filtrerade resultat
+            new_lines = [
+                build_compact_line(
+                    index=i + 1,
+                    score=r["score"],
+                    authors=r["authors"],
+                    year=r["year"],
+                    title=r["title"],
+                    query_terms=query.split(),
+                    max_len=COMPACT_MAX_CHARS,
+                )
+                for i, r in enumerate(filtered_results)
+            ]
+            text_area.text = "\n".join(new_lines)
+
+            # Uppdatera globala resultat
+            global last_shown_results
+            last_shown_results = filtered_results
+
+        close_dialog()
+
+    def reset_filter():
+        """
+        Återställ till ursprungliga resultat och visning.
+        """
+        global last_shown_results
+        last_shown_results = original_results
+
+        # Återställ visningen
+        new_lines = [
+            build_compact_line(
+                index=i + 1,
+                score=r["score"],
+                authors=r["authors"],
+                year=r["year"],
+                title=r["title"],
+                query_terms=[],
+                max_len=COMPACT_MAX_CHARS,
+            )
+            for i, r in enumerate(original_results)
+        ]
+        text_area.text = "\n".join(new_lines)
+        close_dialog()
+
+    def close_dialog():
+        """Stänger dialogen och återställer fokus."""
+        if floats_list:
+            floats_list.pop()
+        get_app().layout.focus(text_area)
+
+    # Tangentbindningar
+    local_kb = KeyBindings()
+
+    @local_kb.add("enter")
+    def _(event):
+        apply_filter()
+
+    @local_kb.add("escape")
+    def _(event):
+        close_dialog()
+
+    @local_kb.add("backspace")
+    def _(event):
+        """
+        Återställ till ursprungliga resultat om fokus inte är i input_box.
+        """
+        if get_app().layout.has_focus(input_box):
+            return  # Ignorera backspace i input_box
+        reset_filter()
+
+    dlg = Dialog(
+        title="Filtrera resultat",
+        body=input_box,
+        buttons=[],  # Inga knappar
+        width=60,
+        modal=True,
+    )
+
+    # Lägg till dialogen som en overlay
+    app = get_app()
+    floats_list.append(Float(content=dlg))
+    app.layout.focus(input_box)
+
+    # Temporär tangentbindning
+    app.key_bindings = local_kb
+
+def show_popup_dialog(apa_text, floats_list, text_area):
+    """
+    Visar en modal dialog med 'apa_text'.
+    Stängs med Enter eller Escape och återställer fokus till listan.
+    """
+    text_area_dialog = TextArea(
+        text=apa_text,
+        read_only=True,
+        wrap_lines=True
+    )
+
+    def close_dialog():
+        # Ta bort dialogen från floats och återställ fokus till listan
+        if floats_list:
+            floats_list.pop()
+        get_app().layout.focus(text_area)
+
+    local_kb = KeyBindings()
+
+    @local_kb.add("enter")
+    @local_kb.add("escape")
+    def _(event):
+        close_dialog()
+
+    dlg = Dialog(
+        title="Kopierad!",
+        body=text_area_dialog,
+        buttons=[],  # Inga knappar
+        width=60,
+        modal=True
+    )
+
+    # Lägg till dialogen som en overlay
+    app = get_app()
+    floats_list.append(Float(content=dlg))
+    app.layout.focus(dlg)
+
+    # Temporär tangentbindning för dialogen
+    app.key_bindings = local_kb
+
+#  show_popup använder en Dialog i Float, ingen extra .run()
+def show_popup(title_text, body_text):
+    """
+    LÄMNAD tom ifall du använde denna för nåt annat. 
+    Men du kan ta bort helt om du vill.
+    """
+    pass
 
 # -------------------------------------------------
 # 9) main
