@@ -1334,17 +1334,6 @@ def show_filter_dialog(results, text_area, floats_list):
     def _(event):
         close_dialog()
 
-    @local_kb.add("backspace")
-    def _(event):
-        """
-        Återställ till ursprungliga resultat om fokus inte är i input_box.
-        """
-        if get_app().layout.has_focus(input_box):
-            debug_log("Backspace ignorerades: fokus är i input_box.")
-            return  # Ignorera backspace i input_box
-
-        debug_log("Backspace: Återställer till ursprunglig lista.")
-        reset_filter()
 
     dlg = Dialog(
         title="Filtrera resultat",
