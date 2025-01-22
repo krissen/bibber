@@ -41,6 +41,8 @@ bib_data = None
 processed_entries_cache = None
 last_shown_results = []
 original_results = []  # Håller ursprungliga resultat innan filtrering
+text_area = None
+
 
 
 LANGUAGE = "en"
@@ -116,6 +118,10 @@ def copy_to_clipboard(txt):
         # print("Reference copied to clipboard.")
     except:
         pass
+
+def debug_log(message):
+      if DEBUG_MODE:
+            print(f"[DEBUG] {message}")
 
 # -------------------------------------------------
 # 2) Språk
@@ -441,13 +447,14 @@ def build_standard_reference_short(entry):
     return line
 
 def search_entries(query):
-    global last_shown_results
+    global last_shown_results, results
     if not bib_data:
         print("Ingen fil är laddad.")
         return
 
     qterms= [x.lower() for x in query.split() if x.lower()!="--debug"]
     scored= _search_and_score_entries(qterms)
+    results = scored
     perfects= [s for s in scored if s["score"]>=100]
     if len(perfects)>5:
         if LANGUAGE=="sv":
@@ -953,13 +960,24 @@ def search_entries_compact(query, max_results=10):
 # 8) Interaktiv
 # -------------------------------------------------
 def _do_copy(index):
-    if index<0 or index>= len(last_shown_results):
+    """Kopiera referens från den aktuella listan."""
+    global last_shown_results
+
+    # Debug-info
+    debug_log(f"Kopiering: Försöker kopiera index {index} från {len(last_shown_results)} resultat.")
+
+    if index < 0 or index >= len(last_shown_results):
         print("Ogiltigt index.")
         return
-    e= list(bib_data.values())[last_shown_results[index]["idx"]]
-    apa= generate_apa(e)
+
+    # Kopiera från last_shown_results
+    ref = last_shown_results[index]
+    apa = generate_apa(ref)
+
+    # Output till användaren
     print(f"\n{apa}\n")
     copy_to_clipboard(apa)
+    debug_log(f"Referens kopierad: {apa}")
 
 def _print_help():
     if LANGUAGE=="sv":
@@ -1085,6 +1103,29 @@ def interactive_shell():
 # -------------------------------------------------
 # (NYTT) Interaktiv kompakt vy
 # -------------------------------------------------
+def update_text_area_with_results(results):
+    """
+    Uppdatera textområdet med givna resultat.
+    """
+    global text_area
+
+    if not results:
+        text_area.text = "Inga resultat att visa."
+    else:
+        new_lines = [
+            build_compact_line(
+                index=i + 1,
+                score=r["score"],
+                authors=r["authors"],
+                year=r["year"],
+                title=r["title"],
+                query_terms=[],
+                max_len=COMPACT_MAX_CHARS
+            )
+            for i, r in enumerate(results)
+        ]
+        text_area.text = "\n".join(new_lines)
+
 def interactive_result_view_compact(results, query_terms):
     """
     Visar en TUI-lik kompakt vy med *alla* resultat i scrollbar text.
@@ -1098,7 +1139,7 @@ def interactive_result_view_compact(results, query_terms):
       "[i] 100.0% | authors | year | title"
     """
 
-    global original_results
+    global original_results, last_shown_results, text_area
     original_results = results  # Spara de ursprungliga resultaten vid laddning
 
     # Bygg stor text av alla results
@@ -1148,6 +1189,20 @@ def interactive_result_view_compact(results, query_terms):
     def on_slash(event):
         # Filtreringsdialog
         show_filter_dialog(results, text_area, floats)
+
+    @kb.add("backspace")
+    def on_backspace(event):
+        """Återställ till originalresultat om ingen dialog är öppen."""
+        global last_shown_results, results, text_area
+
+        if not floats:  # Kontrollera att ingen dialog är öppen
+            debug_log("Backspace trycktes: återställer resultat.")
+            last_shown_results = results  # Återställ till original
+            update_text_area_with_results(results)
+        else:
+            debug_log("Backspace ignorerades: dialogruta är öppen.")
+
+   
 
     @kb.add("pageup")
     def page_up(event):
@@ -1199,29 +1254,27 @@ def show_filter_dialog(results, text_area, floats_list):
     )
 
     def apply_filter():
-        """
-        Filtrera resultat baserat på sökterm och uppdatera visningen.
-        """
+        """Filtrera resultat baserat på sökterm och behåll ursprungligt index."""
         query = input_box.text.lower().strip()
-        if not query:
-            text_area.text = "Inga träffar för filtret."
-            return
-
-        # Filtrera resultat baserat på query
+        debug_log(f"Filtrering: Sökterm är '{query}'.")
+        
         filtered_results = [
-            r for r in original_results
+            r for r in results
             if query in r["authors"].lower()
             or query in r["title"].lower()
             or query in r["year"].lower()
         ]
 
+        debug_log(f"Filtrering: {len(filtered_results)} resultat matchar.")
+        
         if not filtered_results:
             text_area.text = "Inga träffar för filtret."
+            debug_log("Inga träffar för filtret.")
         else:
-            # Uppdatera visningen med filtrerade resultat
+            # Visa det ursprungliga indexet i filtrerade resultat
             new_lines = [
                 build_compact_line(
-                    index=i + 1,
+                    index=results.index(r) + 1,  # Hämta ursprungligt index
                     score=r["score"],
                     authors=r["authors"],
                     year=r["year"],
@@ -1229,24 +1282,27 @@ def show_filter_dialog(results, text_area, floats_list):
                     query_terms=query.split(),
                     max_len=COMPACT_MAX_CHARS,
                 )
-                for i, r in enumerate(filtered_results)
+                for r in filtered_results
             ]
             text_area.text = "\n".join(new_lines)
 
             # Uppdatera globala resultat
             global last_shown_results
             last_shown_results = filtered_results
-
+            debug_log(f"Filtrering: Uppdaterade last_shown_results med {len(filtered_results)} resultat.")
+        
         close_dialog()
 
     def reset_filter():
-        """
-        Återställ till ursprungliga resultat och visning.
-        """
+        """Återställ till den ursprungliga listan och visningen."""
         global last_shown_results
-        last_shown_results = original_results
-
-        # Återställ visningen
+        debug_log("Återställer till ursprungliga resultat.")
+        
+        # Återställ till originalresultaten
+        last_shown_results = results
+        debug_log(f"Antal resultat i återställd lista: {len(results)}.")
+        
+        # Uppdatera visningen i textområdet
         new_lines = [
             build_compact_line(
                 index=i + 1,
@@ -1257,7 +1313,7 @@ def show_filter_dialog(results, text_area, floats_list):
                 query_terms=[],
                 max_len=COMPACT_MAX_CHARS,
             )
-            for i, r in enumerate(original_results)
+            for i, r in enumerate(results)
         ]
         text_area.text = "\n".join(new_lines)
         close_dialog()
@@ -1268,7 +1324,6 @@ def show_filter_dialog(results, text_area, floats_list):
             floats_list.pop()
         get_app().layout.focus(text_area)
 
-    # Tangentbindningar
     local_kb = KeyBindings()
 
     @local_kb.add("enter")
@@ -1285,7 +1340,10 @@ def show_filter_dialog(results, text_area, floats_list):
         Återställ till ursprungliga resultat om fokus inte är i input_box.
         """
         if get_app().layout.has_focus(input_box):
+            debug_log("Backspace ignorerades: fokus är i input_box.")
             return  # Ignorera backspace i input_box
+
+        debug_log("Backspace: Återställer till ursprunglig lista.")
         reset_filter()
 
     dlg = Dialog(
