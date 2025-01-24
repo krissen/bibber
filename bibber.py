@@ -17,13 +17,50 @@ from fuzzywuzzy import fuzz
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (Float, FloatContainer, HSplit,
-                                              VSplit)
+                                              VSplit, Window)
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.margins import ScrollbarMargin
+from prompt_toolkit.layout.processors import Processor, Transformation
+from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Button, Dialog, Frame, Label, TextArea
 from pylatexenc.latex2text import LatexNodes2Text
+
+
+class OldHighlightLineProcessor(Processor):
+    """
+    En Processor som inverterar färger (reverse) på den rad där cursorn befinner sig.
+    Fungerar i äldre prompt_toolkit-versioner som använder run(...).
+    
+    'apply_transformation' gör ingenting men måste finnas
+    för att klassen inte ska vara "abstract".
+    'run(...)' är det äldre API:t där vi får tokens och kan modifiera dem.
+    """
+
+    def apply_transformation(self, transformation_input):
+        # Tom, för att inte klassen ska vara abstrakt i vissa prompt_toolkit-versioner.
+        return transformation_input
+
+    def run(self, cli, document, lineno, source_to_display, tokens):
+        """
+        Anropas i äldre prompt_toolkit för varje rad. 
+        'tokens' är en lista av (style_str, text).
+        'document.cursor_position_row' säger vilken rad markören står på.
+        Om lineno == cursor-line => "reverse" i stilsträngen.
+        """
+        if lineno == document.cursor_position_row:
+            inverted = []
+            for style_str, text in tokens:
+                new_style = style_str + " reverse" if style_str else "reverse"
+                inverted.append((new_style, text))
+            return inverted
+        else:
+            return tokens
+
 
 # -------------------------------------------------
 # Globala
@@ -166,6 +203,8 @@ def load_bibtex(file_path):
 
     cached= load_from_cache(cfile)
     if cached:
+        if DEBUG_MODE:
+            print(f"[DEBUG] Loading from cache: {cfile}")
         bib_data= cached
         if LANGUAGE=="sv":
             print(f"Laddar senast använda fil: {file_path}")
@@ -199,81 +238,183 @@ def load_bibtex(file_path):
 # -------------------------------------------------
 # 4) En förenklad APA, tar hänsyn till LANGUAGE
 # -------------------------------------------------
+def build_editors_string(raw_editor_string, language="en"):
+    """
+    Tar en 'raw_editor_string' (ofta något i stil med 'Last, First and Doe, John ...')
+    och returnerar en sträng i APA-lik form:
+    
+      "Last, F. & Doe, J. (Eds.)"   (om engelska och flera editorer)
+      "Last, F. (Ed.)"             (om engelska och en editor)
+    
+    eller om LANGUAGE="sv":
+      "Last, F. & Doe, J. (red.)"  (vanligast på svenska)
+    
+    Hanterar även fler än 20 redaktörer enligt APA7 (för referenslistor):
+      - De första 19 namnen
+      - "..."
+      - Sista namnet
+    """
+    if not raw_editor_string:
+        return "Unknown Editor"
+
+    # Splitta på ' and ' enligt BibTeX-konvention
+    splitted_editors = raw_editor_string.split(" and ")
+
+    # Hjälpfunktion för att parsa "Efternamn, Förnamn" => "Efternamn, F."
+    def parse_one(raw_name):
+        name_clean = safe_latex_to_text(raw_name.strip())
+        parts = name_clean.split(",")
+        if len(parts) == 2:
+            ln = parts[0].strip()
+            fn_parts = parts[1].split()
+            initials = [f"{p[0].upper()}." for p in fn_parts if p]
+            init_str = " ".join(initials)
+            if init_str:
+                return f"{ln}, {init_str}"
+            else:
+                return ln
+        else:
+            # fallback om formateringen inte är "Efternamn, Förnamn"
+            return name_clean
+
+    # Bygg en lista av parsade redaktörer
+    editors_parsed = [parse_one(ed) for ed in splitted_editors if ed.strip()]
+
+    # APA7: Om fler än 20 => visa de första 19, sedan '...', sedan sista
+    if len(editors_parsed) > 20:
+        editors_parsed = editors_parsed[:19] + ["..."] + [editors_parsed[-1]]
+
+    # Sätt samman till en kommaseparerad sträng,
+    # men ersätt sista kommatecknet med "&" (en enkel variant).
+    if len(editors_parsed) > 1:
+        *all_but_last, last = editors_parsed
+        editors_str = ", ".join(all_but_last) + " & " + last
+    else:
+        editors_str = editors_parsed[0] if editors_parsed else "Unknown"
+
+    # Lägg till "(Ed.)"/"(Eds.)" eller "(red.)" beroende på språk + antal
+    if language.lower() == "en":
+        if len(splitted_editors) == 1:
+            editors_str += " (Ed.)"
+        else:
+            editors_str += " (Eds.)"
+    else:
+        # På svenska kan man välja "(red.)" både för singular och plural
+        editors_str += " (red.)"
+
+    return editors_str
+
 def generate_apa(entry):
     """
-    En förenklad APA 7-funktion med särskild hantering för @inproceedings:
-      - Visar upp till 20 författare innan "et al." (enligt APA7)
-      - Tar med booktitle som konferensens namn
-      - Tar med howpublished (om existerar)
+    En (mer) APA7-liknande funktion som korrekt hanterar:
+      - Flera författare eller redaktörer (upp till 20 innan '...').
+      - @book där 'editor' används om 'author' saknas.
+      - Svenska/engelska skillnader i u.å. / n.d., (red.) / (Ed.), etc.
+
+    OBS! APA7-regler säger egentligen:
+      - Om FLER än 20 författare: Lista första 19, sedan "...", sedan sista författaren.
+      - Om 3-20 författare: lista alla.
+      - Om 2 författare: Namn1 & Namn2
+      - Om 1 författare: Namn1
+    Här förenklas lite för att matcha era tidigare 'et al.' / 'm.fl.'-varianter
+    om fler än 3. Ni kan justera nedan efter behov.
     """
-    from pylatexenc.latex2text import LatexNodes2Text
-    conv = LatexNodes2Text()
+
+    if DEBUG_MODE:
+        for key, val in entry.items():
+            print(f"[DEBUG] ", key, " : ", val)
 
     if LANGUAGE == "sv":
-        no_date   = "u.å."
-        single_ed = " (red.)"
-        multi_ed  = " (red.)"
-        pages_label = "s."
-        et_al_label = "m.fl."
+        no_date       = "u.å."
+        single_ed     = " (red.)"
+        plural_ed     = " (red.)"  # På svenska används ofta bara (red.) även vid flera
+        pages_label   = "s."
+        et_al_label   = "m.fl."
+        edited_label  = "(red.)"   # i stället för (Eds.) i engelsk version
+        in_b          = "I"
     else:
-        no_date   = "n.d."
-        single_ed = " (ed.)"
-        multi_ed  = " (eds.)"
-        pages_label = "pp."
-        et_al_label = "et al."
+        no_date       = "n.d."
+        single_ed     = " (Ed.)"
+        plural_ed     = " (Eds.)"
+        pages_label   = "pp."
+        et_al_label   = "et al."
+        edited_label  = "(Eds.)"
+        in_b          = "In"
 
-    raw_author = entry.get("author", "")
+    # 1) Hämta antingen 'author' eller 'editor' om author saknas
+    raw_author = entry.get("author", "") or entry.get("editor", "")
+    if DEBUG_MODE:
+        print(f"[DEBUG] raw_author={raw_author}")
     is_editor = False
-    if not raw_author:
-        # fallback på editor
-        raw_author = entry.get("editor", "Unknown Editor")
+    if raw_author and not entry.get("author", "") and entry.get("editor", ""):
+        # = Inga 'author' men har 'editor'
         is_editor = True
+    if not raw_author:
+        raw_author = "Unknown"
 
-    # Kör latex->text
-    auth_ltx = conv.latex_to_text(raw_author)
-
-    # Splitta författare på " and "
+    # 2) Om bägge är tomma => fallback
+    if not raw_author:
+        # Ingen författare och ingen redaktör hittades => fallback
+        raw_author = "Unknown"
+    
+    # 3) Författar-/redaktörslistan
+    auth_ltx = safe_latex_to_text(raw_author)
     splitted = [a.strip() for a in auth_ltx.split(" and ")]
     authors = []
     for a in splitted:
         parts = a.split(",")
         if len(parts) == 2:
             ln = parts[0].strip()
-            fn = parts[1].split()
+            fn_parts = parts[1].split()
             # Bygg initialer av alla förnamn
-            # ex. "Anne Siri" => "A.S."
             initials = []
-            for ffn in fn:
+            for ffn in fn_parts:
                 if ffn:  # om ej tom
                     initials.append(ffn[0].upper() + ".")
-            init_str = " ".join(initials)  # "A. S."
+            init_str = " ".join(initials)  # ex "A. S."
             if init_str:
                 authors.append(f"{ln}, {init_str}")
             else:
                 authors.append(ln)
         else:
+            # T.ex. om man råkar ha "Niemi K" istället för "Niemi, Kristian"
             authors.append(a.strip())
 
-    # APA7 upp till 20 författare innan "et al."
+    # --- Exakt APA7-lik hantering av fler än 20 författare ---
+    #   - Om FLER än 20 => ta första 19, sedan "...", sedan sista.
+    #   - Observera att ni i er enklare kod ibland gör "et al." redan vid >3
+    #     Ni kan välja själva. Här visas officiell logik:
     if len(authors) > 20:
-        authors = authors[:19] + [et_al_label]
-    elif len(authors) > 3 and entry.get("entrytype","").lower() != "inproceedings":
-        # För t.ex. article, incollection, etc. => standard <=3
-        # men i inproceedings vill vi tillåta upp till 20
-        first = authors[0]
-        authors = [first, et_al_label]
+        # Spara första 19, sedan ellips, sedan sista
+        first_19 = authors[:19]
+        last_one = authors[-1]
+        authors = first_19 + ["..."] + [last_one]
 
+    # --- Om 2-20 författare/redaktörer => lista alla. ---
+    # Men om ni vill ha "et al." redan vid t.ex. >3, lägg in en sådan om:
+    # if len(authors) > 3:
+    #     # ex: [authors[0], et_al_label]
+    #     pass
+    # (Men då frångår man APA7 officiellt i referenslistan.)
+
+    # 4) Om is_editor => lägg till (Ed.) / (red.) sist i författarsträngen
+    #    men observera att ifall man har FLERA editorer => (Eds.) / (red.)
     if is_editor:
-        # om vi från början tog 'editor' => (ed.) / (eds.)
-        if len(splitted) > 1:
-            authors[-1] += multi_ed
-        else:
+        if len(splitted) == 1:
             authors[-1] += single_ed
+        else:
+            # FLERA
+            authors[-1] += plural_ed
 
-    # Sätt ihop författarsträngen
-    authors_str = ", ".join(authors)
+    # Sätt ihop författarsträngen med kommatecken + & sista namnet? (APA7)
+    # Här förenklat: "Namn1, Namn2, Namn3 & Namn4".
+    # Ni kan göra en enkel variant:
+    if len(authors) > 1:
+        authors_str = ", ".join(authors[:-1]) + " & " + authors[-1]
+    else:
+        authors_str = authors[0]
 
-    # År
+    # 5) År eller datum
     yr = entry.get("year", "")
     if not yr:
         dt = entry.get("date","")
@@ -282,114 +423,114 @@ def generate_apa(entry):
     if not yr:
         yr = no_date
 
-    # Titel
-    title = conv.latex_to_text(entry.get("title","Untitled")).strip()
+    # 6) Titel (kursiverad för bok och article)
+    title_raw = entry.get("title", "Untitled")  # i en bokpost heter det oftast "title"
+    title = safe_latex_to_text(title_raw).strip()
     if title:
         title = title[0].upper() + title[1:]
-    else:
-        title = "Untitled"
 
-    # Sidor
-    pp = entry.get("pages","").replace("--","–")
+    # 7) Sidor
+    pp = entry.get("pages", "").replace("--", "–")
     if pp:
         if LANGUAGE == "sv":
-            # "s. 12–14"
-            pp = f"s. {pp}"
+            pp = f"s. {pp}"  # "s. 23–45"
         else:
             # eng
             if "–" in pp:
-                pp = f"{pages_label} {pp}"  # ex "pp. 12–14"
+                pp = f"{pages_label} {pp}"  # ex "pp. 23–45"
             else:
                 pp = f"p. {pp}"
 
-    # DOI
+    # 8) Doi
     doi = entry.get("doi","")
     if doi and not doi.startswith("https://doi.org/"):
         doi = "https://doi.org/" + doi
 
-    # Ort, förlag
-    loc = conv.latex_to_text(entry.get("location","")).strip()
-    pub = conv.latex_to_text(entry.get("publisher","")).strip()
+    # 9) Plats / förlag
+    loc = safe_latex_to_text(entry.get("location", "")).strip()
+    pub = safe_latex_to_text(entry.get("publisher", "")).strip()
 
-    # entrytype
-    et = entry.get("entrytype","").lower()
+    # 10) Entrytype
+    et = entry.get("entrytype", "").lower()
 
-    # Börja bygga referens
-    apa = f"{authors_str} ({yr}). {title}."
+    # --- Bygg APA-strängen ---
+    # Först: Författare + (år). + Titel. + (ev. i *Boktitel* vid incollection), etc
+    apa = f"{authors_str} ({yr}). "
 
-    # Hantering per entrytype
+    # Särbehandla några entry types
     if et == "incollection":
-        # Bokkapitel
-        bk = conv.latex_to_text(entry.get("booktitle","")).strip()
-        raw_ed = entry.get("editor","")
-        ed_ltx = conv.latex_to_text(raw_ed)
+        # Kapitel i redigerad bok
+        chapter_title = title
+        # Editor-biten
+        raw_ed = entry.get("editor", "")
+        ed_ltx = safe_latex_to_text(raw_ed)
         splitted_ed = ed_ltx.split(" and ")
         
-        if ed_ltx == auth_ltx:
-            # Samma => skip
-            if bk:
-                apa += f" In *{bk}*"
-                if pp:
-                    apa += f" ({pp})"
-            apa += "."
-        else:
-            if len(splitted_ed) == 1:
-                apa += f" In {splitted_ed[0]}{single_ed}"
-            elif len(splitted_ed) > 1:
-                joined = ", ".join(splitted_ed)
-                apa += f" In {joined}{multi_ed}"
-            if bk:
-                apa += f", *{bk}*"
+        # Bokens titel:
+        bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
+
+        apa += f"{chapter_title}. "  # kapitel-titel
+        if bk:
+            # Bygg "In A. Editor & B. Editor (Eds.), *Book Title* (pp. XX–XX). Publisher."
+            # (Obs: ni kan i APA7 skilja ut ifall 1 redaktör => (Ed.) vs 2+ => (Eds.)
+            # men här gör vi förenklat.)
+            # Kolla om editors skiljer sig från "authors" => ibland är de samma
+            if raw_ed and raw_ed != raw_author:
+                # ex: "In Editor, E. (Ed.), *Bokens titel*"
+                editors_str = build_editors_string(raw_ed, LANGUAGE)  
+                # ni kan implementera en liknande funktion som parsear editors
+                apa += f"{in_b} {editors_str}, *{bk}*"
+            else:
+                apa += f"{in_b} *{bk}*"
+            
             if pp:
                 apa += f" ({pp})"
             apa += "."
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
-            apa += f" {pub}."
-        elif loc:
-            apa += f" {loc}."
+        
+        if pub:
+            if loc:
+                apa += f" {loc}: {pub}."
+            else:
+                apa += f" {pub}."
 
     elif et == "article":
         # Tidskriftsartikel
-        j = conv.latex_to_text(entry.get("journaltitle", entry.get("journal",""))).strip()
+        # Hämta journaltitle/journal
+        j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal",""))).strip()
+        apa += f"*{title}*" if title else "*Untitled*"
         if j:
-            apa += f" *{j}*."
+            apa += f". *{j}*"
         if pp:
-            apa += f" {pp}."
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
+            apa += f", {pp}"
+        apa += "."
+
+        if pub:  # Ibland vill man inte ha med publisher för en tidskriftsartikel
             apa += f" {pub}."
-        elif loc:
-            apa += f" {loc}."
 
     elif et == "book":
-        # Bok
+        # Bok eller redigerad bok
+        apa += f"*{title}*."
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
             apa += f" {pub}."
         elif loc:
             apa += f" {loc}."
-        if pp:
-            apa += f" {pp}."
 
     elif et == "inproceedings":
         # Konferensbidrag
-        bk = conv.latex_to_text(entry.get("booktitle","")).strip()
-        howp = conv.latex_to_text(entry.get("howpublished","")).strip()
+        # Ni har redan en variant i originalkoden
+        # ... men här visar vi hur ni kan integrera
+        bk = safe_latex_to_text(entry.get("booktitle","")).strip()
+        howp = safe_latex_to_text(entry.get("howpublished","")).strip()
 
-        # Ex: "Reflexivity reconsidered. In 17th Nordic Conference of Religious Education..., location,
-        #      howpublished, sidor, etc."
+        apa += f"{title}."
         if bk:
-            apa += f" In *{bk}*."
+            apa += f" {in_b} *{bk}*."
         if howp:
-            # T.ex. "Paper presented at..."
             apa += f" {howp}."
         if pp:
             apa += f" {pp}."
-        # location + publisher
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
@@ -399,6 +540,7 @@ def generate_apa(entry):
 
     else:
         # fallback
+        apa += f"{title}."
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
@@ -408,9 +550,12 @@ def generate_apa(entry):
         if pp:
             apa += f" {pp}."
 
-    # eventuellt doi
+    # Avsluta ev. med DOI
     if doi:
-        apa += f" doi: {doi}"
+        # Rekommenderat i APA7 är att enbart skriva:
+        # https://doi.org/...
+        # men om ni vill prefixa med "doi:", gör det
+        apa += f" {doi}"
 
     # städa dubbla mellanslag
     apa = " ".join(apa.split())
@@ -959,9 +1104,53 @@ def search_entries_compact(query, max_results=10):
 # -------------------------------------------------
 # 8) Interaktiv
 # -------------------------------------------------
+def build_compact_tokens(results, query_terms, selected_index):
+    """
+    Returnerar en lista av (style_str, text)-tupler.
+    Varje 'rad' är "[i] score% | authors | year | title", 
+    men om i == selected_index -> lägg till 'reverse' i stilen.
+    """
+    tokens: StyleAndTextTuples = []
+
+    for i, r in enumerate(results):
+        # Bygg själva radsträngen (samma som i build_compact_line)
+        line = build_compact_line(
+            index = i+1,
+            score = r["score"],
+            authors = r["authors"],
+            year = r["year"],
+            title = r["title"],
+            query_terms = query_terms,
+            max_len = COMPACT_MAX_CHARS
+        )
+        line += "\n"  # radbrytning
+
+        # Om denna rad är 'vald' => style = "reverse"
+        style_here = "reverse" if i == selected_index else ""
+
+        # Dela upp radsträngen i ett enda token (eller om du vill finfördela).
+        tokens.append( (style_here, line) )
+
+    return tokens
+
+def render_lines_with_highlight(lines, selected_index):
+    """
+    Returnerar en enda sträng med \n-separerade rader,
+    där rad nr `selected_index` har ANSI-escape för 'reverse' (d.v.s. invert).
+    """
+    out = []
+    for i, line in enumerate(lines):
+        if i == selected_index:
+            # \x1b[7m => Sätt terminalen i 'reverse'
+            # \x1b[0m => Återställ stil
+            out.append(f"\x1b[7m{line}\x1b[0m")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
 def _do_copy(index):
     """Kopiera referens från den aktuella listan."""
-    global last_shown_results
+    global last_shown_results, bib_data
 
     # Debug-info
     debug_log(f"Kopiering: Försöker kopiera index {index} från {len(last_shown_results)} resultat.")
@@ -970,9 +1159,15 @@ def _do_copy(index):
         print("Ogiltigt index.")
         return
 
-    # Kopiera från last_shown_results
-    ref = last_shown_results[index]
-    apa = generate_apa(ref)
+    # Hämta sökresultatets "idx" som pekar in i bib_data
+    result = last_shown_results[index]
+    real_idx = result["idx"]  # den index ni satte i _search_and_score_entries
+
+    # Hämta den riktiga bibposten:
+    bib_entry = list(bib_data.values())[real_idx]
+
+    # Skicka bibposten till generate_apa:
+    apa = generate_apa(bib_entry)
 
     # Output till användaren
     print(f"\n{apa}\n")
@@ -1103,67 +1298,72 @@ def interactive_shell():
 # -------------------------------------------------
 # (NYTT) Interaktiv kompakt vy
 # -------------------------------------------------
-def update_text_area_with_results(results):
+def update_text_area_with_results(new_results):
     """
-    Uppdatera textområdet med givna resultat.
+    Uppdaterar 'body_window' (en Window med FormattedTextControl) med nya rader.
+    Används ex. vid filtrering, så man bara visar de 'new_results'.
     """
-    global text_area
+    global body_window
+    if not body_window:
+        return  # Om body_window inte är definierad, avbryt
 
-    if not results:
-        text_area.text = "Inga resultat att visa."
-    else:
-        new_lines = [
-            build_compact_line(
-                index=i + 1,
-                score=r["score"],
-                authors=r["authors"],
-                year=r["year"],
-                title=r["title"],
-                query_terms=[],
-                max_len=COMPACT_MAX_CHARS
-            )
-            for i, r in enumerate(results)
-        ]
-        text_area.text = "\n".join(new_lines)
-
-def interactive_result_view_compact(results, query_terms):
-    """
-    Visar en TUI-lik kompakt vy med *alla* resultat i scrollbar text.
-    - Enter => kopiera => popup => OK => stäng
-    - / => filterdialog
-    - pageup/pagedown => hel sida
-    - q => avbryt
-
-    Raderna genereras av build_compact_line(...), 
-    så vi behåller befintlig trunkering och format:
-      "[i] 100.0% | authors | year | title"
-    """
-
-    global original_results, last_shown_results, text_area
-    original_results = results  # Spara de ursprungliga resultaten vid laddning
-
-    # Bygg stor text av alla results
-    lines = []
-    for i, r in enumerate(results):
+    # Bygg tokens (utan highlight här - men ni kan lägga in logik för 'selected_row' osv. om ni vill).
+    tokens = []
+    for r in new_results:
         line = build_compact_line(
-            index=i+1,
+            index=r.get("idx", 9999),  # Ni kan välja hur ni vill hantera index
             score=r["score"],
             authors=r["authors"],
             year=r["year"],
             title=r["title"],
-            query_terms=query_terms,
+            query_terms=[],            # Valfritt highlight
             max_len=COMPACT_MAX_CHARS
         )
-        lines.append(line)
+        # Lägg till radbryt
+        line += "\n"
+        tokens.append(("", line))
 
-    full_text = "\n".join(lines)
+    # Sätt 'body_window.content' = en ny FormattedTextControl med dessa tokens
+    body_window.content = FormattedTextControl(
+        text=tokens,
+        focusable=True
+    )
 
-    # Scrollbar + wrap_lines=False så vi kan se trunkerade rader
-    text_area = TextArea(
-        text=full_text,
-        scrollbar=True,
+
+def interactive_result_view_compact(results, query_terms):
+    """
+    Interaktiv kompakt vy baserad på Window+FormattedTextControl i stället för TextArea.
+    Fungerar även i äldre prompt_toolkit-versioner. 
+    Vi använder en scrollbar, highlightar vald rad och kan trycka "enter" etc.
+
+    - global body_window => så att update_text_area_with_results(...) kan referera till den.
+    """
+    global original_results, last_shown_results
+    global body_window  # <-- Vi deklarerar att vi vill använda en global variabel.
+
+    original_results = results
+    last_shown_results = results
+
+    # Start med selected_row = 0
+    selected_row = 0
+
+    # En liten funktion som bygger tokens-listan (en rad => ev. "reverse")
+    def build_tokens_for_current_view():
+        return build_compact_tokens(results, query_terms, selected_row)
+
+    # Skapa en FormattedTextControl baserat på tokens
+    body_control = FormattedTextControl(
+        text=build_tokens_for_current_view(),
+        focusable=True,
+    )
+
+    # Skapa en Window + scrollbar
+    body_window = Window(
+        content=body_control,
+        right_margins=[ScrollbarMargin()],
         wrap_lines=False,
-        read_only=True
+        dont_extend_height=False,
+        dont_extend_width=False,
     )
 
     kb = KeyBindings()
@@ -1173,40 +1373,51 @@ def interactive_result_view_compact(results, query_terms):
     def _(event):
         event.app.exit()
 
+    @kb.add("up")
+    def on_up(event):
+        nonlocal selected_row
+        if selected_row > 0:
+            selected_row -= 1
+        body_control.text = build_tokens_for_current_view()
+
+    @kb.add("down")
+    def on_down(event):
+        nonlocal selected_row
+        if selected_row < len(results) - 1:
+            selected_row += 1
+        body_control.text = build_tokens_for_current_view()
+
     @kb.add("enter")
     def on_enter(event):
-        row_i = text_area.document.cursor_position_row
-        if 0 <= row_i < len(results):
-            # Kopiera
-            actual_idx = results[row_i]["idx"]
+        if 0 <= selected_row < len(results):
+            actual_idx = results[selected_row]["idx"]
             e = list(bib_data.values())[actual_idx]
             apa = generate_apa(e)
             copy_to_clipboard(apa)
-            # Visa popup
-            show_popup_dialog(apa, floats, text_area)
+            show_popup_dialog(apa, floats, body_window)
 
     @kb.add("/")
     def on_slash(event):
         # Filtreringsdialog
-        show_filter_dialog(results, text_area, floats)
+        show_filter_dialog(results, body_window, floats)
 
     @kb.add("backspace")
     def on_backspace(event):
-        """Återställ till originalresultat om ingen dialog är öppen."""
-        global last_shown_results, results, text_area
-
-        if not floats:  # Kontrollera att ingen dialog är öppen
+        """
+        Återställ till originalresultat om ingen dialogruta är öppen.
+        """
+        global last_shown_results
+        if not floats:
             debug_log("Backspace trycktes: återställer resultat.")
-            last_shown_results = results  # Återställ till original
-            update_text_area_with_results(results)
+            last_shown_results = results
+            selected_row = 0
+            body_control.text = build_tokens_for_current_view()
         else:
             debug_log("Backspace ignorerades: dialogruta är öppen.")
 
-   
-
     @kb.add("pageup")
     def page_up(event):
-        w = text_area.window
+        w = body_window
         info = w.render_info
         if info:
             page_size = info.window_height
@@ -1215,7 +1426,7 @@ def interactive_result_view_compact(results, query_terms):
 
     @kb.add("pagedown")
     def page_down(event):
-        w = text_area.window
+        w = body_window
         info = w.render_info
         if info:
             page_size = info.window_height
@@ -1224,15 +1435,11 @@ def interactive_result_view_compact(results, query_terms):
             w.vertical_scroll = new_val
 
     frame = Frame(
-        text_area,
-        title="(Enter=copy, /=filter, PageUp/Down, q=quit)"
+        body_window,
+        title="(Enter=copy, /=filter, PageUp/Down, Up/Down, q=quit)"
     )
 
-    # floatcontainer => popup dialogs
-    root_container = FloatContainer(
-        content=frame,
-        floats=floats
-    )
+    root_container = FloatContainer(content=frame, floats=floats)
     layout = Layout(root_container)
 
     app = Application(
@@ -1246,6 +1453,8 @@ def interactive_result_view_compact(results, query_terms):
 def show_filter_dialog(results, text_area, floats_list):
     """
     Visar en modal dialog för att filtrera resultat.
+    Vid [Enter] kallas apply_filter(). Vid [Escape] stängs rutan.
+    När rutan stängs, återställs tangentbindningarna och fokus till 'text_area'.
     """
     input_box = TextArea(
         text="",
@@ -1254,10 +1463,10 @@ def show_filter_dialog(results, text_area, floats_list):
     )
 
     def apply_filter():
-        """Filtrera resultat baserat på sökterm och behåll ursprungligt index."""
+        """Filtrera resultat baserat på sökterm och uppdatera vyn."""
         query = input_box.text.lower().strip()
         debug_log(f"Filtrering: Sökterm är '{query}'.")
-        
+
         filtered_results = [
             r for r in results
             if query in r["authors"].lower()
@@ -1266,64 +1475,40 @@ def show_filter_dialog(results, text_area, floats_list):
         ]
 
         debug_log(f"Filtrering: {len(filtered_results)} resultat matchar.")
-        
+
         if not filtered_results:
             text_area.text = "Inga träffar för filtret."
             debug_log("Inga träffar för filtret.")
         else:
-            # Visa det ursprungliga indexet i filtrerade resultat
-            new_lines = [
-                build_compact_line(
-                    index=results.index(r) + 1,  # Hämta ursprungligt index
-                    score=r["score"],
-                    authors=r["authors"],
-                    year=r["year"],
-                    title=r["title"],
-                    query_terms=query.split(),
-                    max_len=COMPACT_MAX_CHARS,
-                )
-                for r in filtered_results
-            ]
-            text_area.text = "\n".join(new_lines)
-
-            # Uppdatera globala resultat
+            # Uppdatera globala last_shown_results
             global last_shown_results
             last_shown_results = filtered_results
             debug_log(f"Filtrering: Uppdaterade last_shown_results med {len(filtered_results)} resultat.")
-        
+
+            # Uppdatera själva text_area (eller Window) med nya rader
+            update_text_area_with_results(filtered_results)
+
         close_dialog()
 
     def reset_filter():
         """Återställ till den ursprungliga listan och visningen."""
         global last_shown_results
         debug_log("Återställer till ursprungliga resultat.")
-        
-        # Återställ till originalresultaten
+
         last_shown_results = results
         debug_log(f"Antal resultat i återställd lista: {len(results)}.")
-        
-        # Uppdatera visningen i textområdet
-        new_lines = [
-            build_compact_line(
-                index=i + 1,
-                score=r["score"],
-                authors=r["authors"],
-                year=r["year"],
-                title=r["title"],
-                query_terms=[],
-                max_len=COMPACT_MAX_CHARS,
-            )
-            for i, r in enumerate(results)
-        ]
-        text_area.text = "\n".join(new_lines)
+
+        update_text_area_with_results(results)
         close_dialog()
 
     def close_dialog():
-        """Stänger dialogen och återställer fokus."""
+        """Stänger dialogen, återställer tangentbindningar och fokus."""
         if floats_list:
             floats_list.pop()
+        app.key_bindings = old_key_bindings
         get_app().layout.focus(text_area)
 
+    # Lokala tangentbindningar för dialogfönstret
     local_kb = KeyBindings()
 
     @local_kb.add("enter")
@@ -1334,7 +1519,7 @@ def show_filter_dialog(results, text_area, floats_list):
     def _(event):
         close_dialog()
 
-
+    # Skapa själv Dialog-objektet
     dlg = Dialog(
         title="Filtrera resultat",
         body=input_box,
@@ -1343,18 +1528,23 @@ def show_filter_dialog(results, text_area, floats_list):
         modal=True,
     )
 
-    # Lägg till dialogen som en overlay
+    # Lägg till dialogen i floats
     app = get_app()
     floats_list.append(Float(content=dlg))
+
+    # Spara de gamla tangentbindningarna och sätt nya
+    old_key_bindings = app.key_bindings
+    app.key_bindings = local_kb
+
+    # Sätt fokus på inmatningsrutan
     app.layout.focus(input_box)
 
-    # Temporär tangentbindning
-    app.key_bindings = local_kb
 
 def show_popup_dialog(apa_text, floats_list, text_area):
     """
     Visar en modal dialog med 'apa_text'.
-    Stängs med Enter eller Escape och återställer fokus till listan.
+    Stängs med Enter eller Escape. När den stängs
+    återställs tangentbindningar och fokus till 'text_area'.
     """
     text_area_dialog = TextArea(
         text=apa_text,
@@ -1362,13 +1552,15 @@ def show_popup_dialog(apa_text, floats_list, text_area):
         wrap_lines=True
     )
 
+    # Lokala tangentbindningar för dialogen.
+    local_kb = KeyBindings()
+
     def close_dialog():
-        # Ta bort dialogen från floats och återställ fokus till listan
+        """Ta bort dialogen och återställ fokus + key_bindings."""
         if floats_list:
             floats_list.pop()
+        app.key_bindings = old_key_bindings  # Återställ
         get_app().layout.focus(text_area)
-
-    local_kb = KeyBindings()
 
     @local_kb.add("enter")
     @local_kb.add("escape")
@@ -1383,13 +1575,16 @@ def show_popup_dialog(apa_text, floats_list, text_area):
         modal=True
     )
 
-    # Lägg till dialogen som en overlay
+    # Lägg till dialogen som en overlay i floats_list
     app = get_app()
     floats_list.append(Float(content=dlg))
-    app.layout.focus(dlg)
 
-    # Temporär tangentbindning för dialogen
+    # Spara gamla tangentbindningar och sätt nya
+    old_key_bindings = app.key_bindings
     app.key_bindings = local_kb
+
+    # Sätt fokus på dialogfönstret
+    app.layout.focus(dlg)
 
 #  show_popup använder en Dialog i Float, ingen extra .run()
 def show_popup(title_text, body_text):
