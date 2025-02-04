@@ -310,27 +310,26 @@ def generate_apa(entry):
       - Flera författare eller redaktörer (upp till 20 innan '...').
       - @book där 'editor' används om 'author' saknas.
       - Svenska/engelska skillnader i u.å. / n.d., (red.) / (Ed.), etc.
-
-    OBS! APA7-regler säger egentligen:
-      - Om FLER än 20 författare: Lista första 19, sedan "...", sedan sista författaren.
-      - Om 3-20 författare: lista alla.
-      - Om 2 författare: Namn1 & Namn2
-      - Om 1 författare: Namn1
-    Här förenklas lite för att matcha era tidigare 'et al.' / 'm.fl.'-varianter
-    om fler än 3. Ni kan justera nedan efter behov.
+      - Tidskriftsartiklar med korrekt formaterad kursivering:
+          *Tidskriftstitel, volym* (issue), pp. sidor.
+    
+    Exempel (engelska):
+      Author, A. A. (Year). Title of article. *Title of Journal, Volume*(Issue), pp. pages. https://doi.org/...
+      
+    Exempel (svenska):
+      Author, A. A. (År). Artikelns titel. *Tidskriftstitel, volym*(nummer), ss. sidor.
     """
-
     if DEBUG_MODE:
         for key, val in entry.items():
-            print(f"[DEBUG] ", key, " : ", val)
+            print(f"[DEBUG] {key} : {val}")
 
     if LANGUAGE == "sv":
         no_date       = "u.å."
         single_ed     = " (red.)"
         plural_ed     = " (red.)"  # På svenska används ofta bara (red.) även vid flera
-        pages_label   = "s."
+        pages_label   = "ss."
         et_al_label   = "m.fl."
-        edited_label  = "(red.)"   # i stället för (Eds.) i engelsk version
+        edited_label  = "(red.)"
         in_b          = "I"
     else:
         no_date       = "n.d."
@@ -341,23 +340,17 @@ def generate_apa(entry):
         edited_label  = "(Eds.)"
         in_b          = "In"
 
-    # 1) Hämta antingen 'author' eller 'editor' om author saknas
+    # 1) Hämta antingen 'author' eller 'editor' om 'author' saknas
     raw_author = entry.get("author", "") or entry.get("editor", "")
     if DEBUG_MODE:
         print(f"[DEBUG] raw_author={raw_author}")
     is_editor = False
     if raw_author and not entry.get("author", "") and entry.get("editor", ""):
-        # = Inga 'author' men har 'editor'
         is_editor = True
     if not raw_author:
         raw_author = "Unknown"
 
-    # 2) Om bägge är tomma => fallback
-    if not raw_author:
-        # Ingen författare och ingen redaktör hittades => fallback
-        raw_author = "Unknown"
-    
-    # 3) Författar-/redaktörslistan
+    # 2) Författar-/redaktörslistan
     auth_ltx = safe_latex_to_text(raw_author)
     splitted = [a.strip() for a in auth_ltx.split(" and ")]
     authors = []
@@ -366,149 +359,111 @@ def generate_apa(entry):
         if len(parts) == 2:
             ln = parts[0].strip()
             fn_parts = parts[1].split()
-            # Bygg initialer av alla förnamn
             initials = []
             for ffn in fn_parts:
-                if ffn:  # om ej tom
+                if ffn:
                     initials.append(ffn[0].upper() + ".")
-            init_str = " ".join(initials)  # ex "A. S."
+            init_str = " ".join(initials)
             if init_str:
                 authors.append(f"{ln}, {init_str}")
             else:
                 authors.append(ln)
         else:
-            # T.ex. om man råkar ha "Niemi K" istället för "Niemi, Kristian"
             authors.append(a.strip())
-
-    # --- Exakt APA7-lik hantering av fler än 20 författare ---
-    #   - Om FLER än 20 => ta första 19, sedan "...", sedan sista.
-    #   - Observera att ni i er enklare kod ibland gör "et al." redan vid >3
-    #     Ni kan välja själva. Här visas officiell logik:
     if len(authors) > 20:
-        # Spara första 19, sedan ellips, sedan sista
         first_19 = authors[:19]
         last_one = authors[-1]
         authors = first_19 + ["..."] + [last_one]
-
-    # --- Om 2-20 författare/redaktörer => lista alla. ---
-    # Men om ni vill ha "et al." redan vid t.ex. >3, lägg in en sådan om:
-    # if len(authors) > 3:
-    #     # ex: [authors[0], et_al_label]
-    #     pass
-    # (Men då frångår man APA7 officiellt i referenslistan.)
-
-    # 4) Om is_editor => lägg till (Ed.) / (red.) sist i författarsträngen
-    #    men observera att ifall man har FLERA editorer => (Eds.) / (red.)
     if is_editor:
         if len(splitted) == 1:
             authors[-1] += single_ed
         else:
-            # FLERA
             authors[-1] += plural_ed
-
-    # Sätt ihop författarsträngen med kommatecken + & sista namnet? (APA7)
-    # Här förenklat: "Namn1, Namn2, Namn3 & Namn4".
-    # Ni kan göra en enkel variant:
     if len(authors) > 1:
         authors_str = ", ".join(authors[:-1]) + " & " + authors[-1]
     else:
         authors_str = authors[0]
 
-    # 5) År eller datum
+    # 3) År
     yr = entry.get("year", "")
     if not yr:
-        dt = entry.get("date","")
+        dt = entry.get("date", "")
         if dt:
             yr = dt[:4]
     if not yr:
         yr = no_date
 
-    # 6) Titel (kursiverad för bok och article)
-    title_raw = entry.get("title", "Untitled")  # i en bokpost heter det oftast "title"
+    # 4) Titel – artikeltitel, boktitel, etc.
+    title_raw = entry.get("title", "Untitled")
     title = safe_latex_to_text(title_raw).strip()
     if title:
         title = title[0].upper() + title[1:]
+    else:
+        title = "Untitled"
 
-    # 7) Sidor
+    # 5) Sidor
     pp = entry.get("pages", "").replace("--", "–")
     if pp:
         if LANGUAGE == "sv":
-            pp = f"s. {pp}"  # "s. 23–45"
+            pp = f"{pages_label} {pp}"
         else:
-            # eng
-            if "–" in pp:
-                pp = f"{pages_label} {pp}"  # ex "pp. 23–45"
-            else:
-                pp = f"p. {pp}"
+            pp = f"{pages_label} {pp}"
 
-    # 8) Doi
-    doi = entry.get("doi","")
+    # 6) DOI
+    doi = entry.get("doi", "")
     if doi and not doi.startswith("https://doi.org/"):
         doi = "https://doi.org/" + doi
 
-    # 9) Plats / förlag
+    # 7) Plats / förlag
     loc = safe_latex_to_text(entry.get("location", "")).strip()
     pub = safe_latex_to_text(entry.get("publisher", "")).strip()
 
-    # 10) Entrytype
+    # 8) Entrytype
     et = entry.get("entrytype", "").lower()
 
-    # --- Bygg APA-strängen ---
-    # Först: Författare + (år). + Titel. + (ev. i *Boktitel* vid incollection), etc
+    # Börja bygga APA-strängen
     apa = f"{authors_str} ({yr}). "
 
-    # Särbehandla några entry types
     if et == "incollection":
         # Kapitel i redigerad bok
         chapter_title = title
-        # Editor-biten
         raw_ed = entry.get("editor", "")
         ed_ltx = safe_latex_to_text(raw_ed)
         splitted_ed = ed_ltx.split(" and ")
-        
-        # Bokens titel:
         bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
-
-        apa += f"{chapter_title}. "  # kapitel-titel
+        apa += f"{chapter_title}. "
         if bk:
-            # Bygg "In A. Editor & B. Editor (Eds.), *Book Title* (pp. XX–XX). Publisher."
-            # (Obs: ni kan i APA7 skilja ut ifall 1 redaktör => (Ed.) vs 2+ => (Eds.)
-            # men här gör vi förenklat.)
-            # Kolla om editors skiljer sig från "authors" => ibland är de samma
             if raw_ed and raw_ed != raw_author:
-                # ex: "In Editor, E. (Ed.), *Bokens titel*"
-                editors_str = build_editors_string(raw_ed, LANGUAGE)  
-                # ni kan implementera en liknande funktion som parsear editors
+                editors_str = build_editors_string(raw_ed, LANGUAGE)
                 apa += f"{in_b} {editors_str}, *{bk}*"
             else:
                 apa += f"{in_b} *{bk}*"
-            
             if pp:
                 apa += f" ({pp})"
             apa += "."
-        
         if pub:
             if loc:
                 apa += f" {loc}: {pub}."
             else:
                 apa += f" {pub}."
-
     elif et == "article":
-        # Tidskriftsartikel
-        # Hämta journaltitle/journal
-        j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal",""))).strip()
-        apa += f"*{title}*" if title else "*Untitled*"
+        # Artikel: titeln (ej kursiv), följt av tidskrift (kursiv) med volym och (om finns) issue utanför kursiv.
+        apa += f"{title}."  # Artikelns titel (ej kursiv)
+        j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
+        vol = entry.get("volume", "").strip()
+        num = entry.get("number", "").strip()
         if j:
-            apa += f". *{j}*"
+            apa += " "
+            if vol:
+                apa += f"*{j}, {vol}*"
+            else:
+                apa += f"*{j}*"
+            if num:
+                apa += f"({num})"
         if pp:
             apa += f", {pp}"
         apa += "."
-
-        if pub:  # Ibland vill man inte ha med publisher för en tidskriftsartikel
-            apa += f" {pub}."
-
     elif et == "book":
-        # Bok eller redigerad bok
         apa += f"*{title}*."
         if loc and pub:
             apa += f" {loc}: {pub}."
@@ -516,14 +471,9 @@ def generate_apa(entry):
             apa += f" {pub}."
         elif loc:
             apa += f" {loc}."
-
     elif et == "inproceedings":
-        # Konferensbidrag
-        # Ni har redan en variant i originalkoden
-        # ... men här visar vi hur ni kan integrera
-        bk = safe_latex_to_text(entry.get("booktitle","")).strip()
-        howp = safe_latex_to_text(entry.get("howpublished","")).strip()
-
+        bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
+        howp = safe_latex_to_text(entry.get("howpublished", "")).strip()
         apa += f"{title}."
         if bk:
             apa += f" {in_b} *{bk}*."
@@ -537,9 +487,7 @@ def generate_apa(entry):
             apa += f" {pub}."
         elif loc:
             apa += f" {loc}."
-
     else:
-        # fallback
         apa += f"{title}."
         if loc and pub:
             apa += f" {loc}: {pub}."
@@ -549,15 +497,8 @@ def generate_apa(entry):
             apa += f" {loc}."
         if pp:
             apa += f" {pp}."
-
-    # Avsluta ev. med DOI
     if doi:
-        # Rekommenderat i APA7 är att enbart skriva:
-        # https://doi.org/...
-        # men om ni vill prefixa med "doi:", gör det
         apa += f" {doi}"
-
-    # städa dubbla mellanslag
     apa = " ".join(apa.split())
     return apa
 
