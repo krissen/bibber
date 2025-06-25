@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import biblib.algo
@@ -21,13 +20,11 @@ from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import (Float, FloatContainer, HSplit,
-                                              VSplit, Window)
+from prompt_toolkit.layout.containers import (Float, FloatContainer, Window)
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.margins import ScrollbarMargin
-from prompt_toolkit.layout.processors import Processor, Transformation
-from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Button, Dialog, Frame, Label, TextArea
+from prompt_toolkit.layout.processors import Processor
+from prompt_toolkit.widgets import Dialog, Frame, TextArea
 from pylatexenc.latex2text import LatexNodes2Text
 
 
@@ -328,16 +325,12 @@ def generate_apa(entry):
         single_ed     = " (red.)"
         plural_ed     = " (red.)"  # På svenska används ofta bara (red.) även vid flera
         pages_label   = "ss."
-        et_al_label   = "m.fl."
-        edited_label  = "(red.)"
         in_b          = "I"
     else:
         no_date       = "n.d."
         single_ed     = " (Ed.)"
         plural_ed     = " (Eds.)"
         pages_label   = "pp."
-        et_al_label   = "et al."
-        edited_label  = "(Eds.)"
         in_b          = "In"
 
     # 1) Hämta antingen 'author' eller 'editor' om 'author' saknas
@@ -429,7 +422,7 @@ def generate_apa(entry):
         chapter_title = title
         raw_ed = entry.get("editor", "")
         ed_ltx = safe_latex_to_text(raw_ed)
-        splitted_ed = ed_ltx.split(" and ")
+        ed_ltx.split(" and ")
         bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
         apa += f"{chapter_title}. "
         if bk:
@@ -1237,7 +1230,7 @@ def interactive_shell():
             break
 
 # -------------------------------------------------
-# (NYTT) Interaktiv kompakt vy
+# Interaktiv kompakt vy
 # -------------------------------------------------
 def update_text_area_with_results(new_results):
     """
@@ -1351,7 +1344,6 @@ def interactive_result_view_compact(results, query_terms):
         if not floats:
             debug_log("Backspace trycktes: återställer resultat.")
             last_shown_results = results
-            selected_row = 0
             body_control.text = build_tokens_for_current_view()
         else:
             debug_log("Backspace ignorerades: dialogruta är öppen.")
