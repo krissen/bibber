@@ -20,7 +20,7 @@ from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import (Float, FloatContainer, Window)
+from prompt_toolkit.layout.containers import Float, FloatContainer, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.processors import Processor
@@ -309,12 +309,7 @@ def generate_apa(entry):
       - Svenska/engelska skillnader i u.å. / n.d., (red.) / (Ed.), etc.
       - Tidskriftsartiklar med korrekt formaterad kursivering:
           *Tidskriftstitel, volym* (issue), pp. sidor.
-    
-    Exempel (engelska):
-      Author, A. A. (Year). Title of article. *Title of Journal, Volume*(Issue), pp. pages. https://doi.org/...
-      
-    Exempel (svenska):
-      Author, A. A. (År). Artikelns titel. *Tidskriftstitel, volym*(nummer), ss. sidor.
+      - För @misc: visar DOI om det finns, annars URL, samt note/annotate sist inom hakparentes.
     """
     if DEBUG_MODE:
         for key, val in entry.items():
@@ -323,7 +318,7 @@ def generate_apa(entry):
     if LANGUAGE == "sv":
         no_date       = "u.å."
         single_ed     = " (red.)"
-        plural_ed     = " (red.)"  # På svenska används ofta bara (red.) även vid flera
+        plural_ed     = " (red.)"
         pages_label   = "ss."
         in_b          = "I"
     else:
@@ -397,15 +392,19 @@ def generate_apa(entry):
     # 5) Sidor
     pp = entry.get("pages", "").replace("--", "–")
     if pp:
-        if LANGUAGE == "sv":
-            pp = f"{pages_label} {pp}"
-        else:
-            pp = f"{pages_label} {pp}"
+        pp = f"{pages_label} {pp}"
 
-    # 6) DOI
+    # 6) DOI/URL
     doi = entry.get("doi", "")
-    if doi and not doi.startswith("https://doi.org/"):
-        doi = "https://doi.org/" + doi
+    url = entry.get("url", "")
+    if doi:
+        if not doi.startswith("https://doi.org/"):
+            doi = "https://doi.org/" + doi
+        link = doi
+    elif url:
+        link = url
+    else:
+        link = ""
 
     # 7) Plats / förlag
     loc = safe_latex_to_text(entry.get("location", "")).strip()
@@ -414,9 +413,38 @@ def generate_apa(entry):
     # 8) Entrytype
     et = entry.get("entrytype", "").lower()
 
-    # Börja bygga APA-strängen
     apa = f"{authors_str} ({yr}). "
 
+    # ========================
+    # Speciell hantering för thesis/avhandling/examensarbete
+    # ========================
+    thesis_types = ("phdthesis", "mastersthesis", "thesis")
+    if et in thesis_types or (et == "misc" and (entry.get("institution") or entry.get("school") or entry.get("publisher"))):
+        # Bygg ordning institution, school, publisher, endast unika värden
+        inst = safe_latex_to_text(entry.get("institution", "")).strip()
+        school = safe_latex_to_text(entry.get("school", "")).strip()
+        pub = safe_latex_to_text(entry.get("publisher", "")).strip()
+        org_fields = [inst, school, pub]
+        seen = set()
+        orgs = []
+        for val in org_fields:
+            if val and val not in seen:
+                orgs.append(val)
+                seen.add(val)
+        apa += f"*{title}*."
+        if orgs:
+            apa += " " + ", ".join(orgs) + "."
+        # Lägg till eventuell note/annotate
+        note = entry.get("note") or entry.get("annotate")
+        if note:
+            apa += f" [{safe_latex_to_text(note).strip()}]"
+        # Länk sist om finns
+        if link:
+            apa += f" {link}"
+        apa = " ".join(apa.split())
+        return apa
+
+    # ============ Resten av typerna ============
     if et == "incollection":
         # Kapitel i redigerad bok
         chapter_title = title
@@ -440,8 +468,7 @@ def generate_apa(entry):
             else:
                 apa += f" {pub}."
     elif et == "article":
-        # Artikel: titeln (ej kursiv), följt av tidskrift (kursiv) med volym och (om finns) issue utanför kursiv.
-        apa += f"{title}."  # Artikelns titel (ej kursiv)
+        apa += f"{title}."
         j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
         vol = entry.get("volume", "").strip()
         num = entry.get("number", "").strip()
@@ -480,6 +507,27 @@ def generate_apa(entry):
             apa += f" {pub}."
         elif loc:
             apa += f" {loc}."
+    elif et == "misc":
+        apa += f"*{title}*."
+        inst = safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip()
+        series = safe_latex_to_text(entry.get("series", "")).strip()
+        if inst:
+            apa += f" {inst}."
+        if series:
+            apa += f" {series}."
+        if loc and pub:
+            apa += f" {loc}: {pub}."
+        elif pub:
+            apa += f" {pub}."
+        elif loc:
+            apa += f" {loc}."
+        if pp:
+            apa += f" {pp}."
+        if link:
+            apa += f" {link}"
+        note = entry.get("note") or entry.get("annotate")
+        if note:
+            apa += f" [{safe_latex_to_text(note).strip()}]"
     else:
         apa += f"{title}."
         if loc and pub:
@@ -490,8 +538,20 @@ def generate_apa(entry):
             apa += f" {loc}."
         if pp:
             apa += f" {pp}."
-    if doi:
-        apa += f" {doi}"
+        if link:
+            apa += f" {link}"
+        note = entry.get("note") or entry.get("annotate")
+        if note:
+            apa += f" [{safe_latex_to_text(note).strip()}]"
+
+    # Lägg till länk och note sist om de inte redan lagts till
+    if et not in ("misc", ""):
+        if link:
+            apa += f" {link}"
+        note = entry.get("note") or entry.get("annotate")
+        if note:
+            apa += f" [{safe_latex_to_text(note).strip()}]"
+
     apa = " ".join(apa.split())
     return apa
 
