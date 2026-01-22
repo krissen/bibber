@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/Users/krisniem/.local/share/miniforge3/envs/default/bin/python
 # coding=utf-8
 import argparse
 import collections
@@ -9,9 +9,8 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-import biblib.algo
-import biblib.bib
-import biblib.messages
+import bibtexparser
+import bibtexparser.middlewares as m
 import pyperclip
 from fuzzywuzzy import fuzz
 from prompt_toolkit import PromptSession
@@ -27,6 +26,35 @@ from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.processors import Processor
 from prompt_toolkit.widgets import Dialog, Frame, TextArea
 from pylatexenc.latex2text import LatexNodes2Text
+
+
+def resolve_crossrefs_v2(library):
+    """Resolver crossref-fält för bibtexparser v2."""
+    entries_by_key = {e.key: e for e in library.entries}
+
+    for entry in library.entries:
+        crossref_field = entry.fields_dict.get("crossref")
+        if crossref_field:
+            ref_key = crossref_field.value.strip("{}")
+            ref_entry = entries_by_key.get(ref_key)
+            if ref_entry:
+                for field_key, field in ref_entry.fields_dict.items():
+                    if field_key not in entry.fields_dict and field_key != "crossref":
+                        entry.set_field(bibtexparser.model.Field(
+                            key=field_key, value=field.value
+                        ))
+    return library
+
+
+def library_to_dict(library):
+    """Konverterar bibtexparser Library till dict-format."""
+    result = {}
+    for entry in library.entries:
+        entry_dict = {"entrytype": entry.entry_type}
+        for field_key, field in entry.fields_dict.items():
+            entry_dict[field_key] = field.value
+        result[entry.key] = entry_dict  # Original case!
+    return result
 
 
 class OldHighlightLineProcessor(Processor):
@@ -83,6 +111,7 @@ text_area = None
 
 LANGUAGE = "en"
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
+CACHE_VERSION = "2"  # Bump vid ändringar i cache-format
 
 # -------------------------------------------------
 # Argument-parsning
@@ -143,14 +172,18 @@ def md5sum(file_path):
 
 def load_from_cache(cache_file):
     try:
-        with open(cache_file,"r") as f:
-            return json.load(f)
+        with open(cache_file, "r") as f:
+            cached = json.load(f)
+            if isinstance(cached, dict) and cached.get("version") == CACHE_VERSION:
+                return cached["entries"]
+            return None  # Gammal cache-version
     except (json.JSONDecodeError, IOError):
         return None
 
+
 def save_to_cache(data, cache_file):
-    with open(cache_file,"w") as f:
-        json.dump(data,f)
+    with open(cache_file, "w") as f:
+        json.dump({"version": CACHE_VERSION, "entries": data}, f)
 
 def safe_latex_to_text(x):
     try:
@@ -194,17 +227,6 @@ def save_language_setting(lang):
 # -------------------------------------------------
 # 3) BibTeX-laddning
 # -------------------------------------------------
-def extract_entrytypes(file_path):
-    out={}
-    with open(file_path,"r",encoding="utf-8") as fp:
-        for line in fp:
-            line=line.strip()
-            if line.startswith("@") and "{" in line:
-                et, rest=line[1:].split("{",1)
-                key= rest.split(",",1)[0].strip()
-                out[key.lower()] = et.lower()
-    return out
-
 def load_bibtex(file_path, verbose=None):
     """
     Laddar BibTeX-fil.
@@ -238,16 +260,15 @@ def load_bibtex(file_path, verbose=None):
                     print(f"Laddar fil: {file_path}", file=sys.stderr)
                 else:
                     print(f"Loading file: {file_path}", file=sys.stderr)
-            with open(file_path, "r", encoding="utf-8") as bf:
-                parser = biblib.bib.Parser()
-                parsed_db = parser.parse(bf, log_fp=sys.stderr).get_entries()
-                resolved = biblib.bib.resolve_crossrefs(parsed_db)
-                bib_data = resolved
 
-            etypes = extract_entrytypes(file_path)
-            for k, e in bib_data.items():
-                if e.get("entrytype", "unknown") == "unknown":
-                    e["entrytype"] = etypes.get(k.lower(), "unknown")
+            library = bibtexparser.parse_file(file_path)
+            library = resolve_crossrefs_v2(library)
+            bib_data = library_to_dict(library)
+
+            # Logga eventuella parsningsfel
+            if library.failed_blocks:
+                for block in library.failed_blocks:
+                    print(f"Varning: Parsningsfel", file=sys.stderr)
 
             save_to_cache(bib_data, cfile)
             save_last_used_file(file_path)
