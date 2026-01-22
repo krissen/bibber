@@ -7,25 +7,58 @@ import hashlib
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 import bibtexparser
-import bibtexparser.middlewares as m
-import pyperclip
 from fuzzywuzzy import fuzz
-from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application
-from prompt_toolkit.application.current import get_app
-from prompt_toolkit.formatted_text import StyleAndTextTuples
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import Float, FloatContainer, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.layout.margins import ScrollbarMargin
-from prompt_toolkit.layout.processors import Processor
-from prompt_toolkit.widgets import Dialog, Frame, TextArea
 from pylatexenc.latex2text import LatexNodes2Text
+
+# Lazy imports för interaktivt läge (prompt_toolkit är tungt)
+_interactive_imports_done = False
+
+
+def _ensure_interactive_imports():
+    """Importerar tunga bibliotek för interaktivt läge vid behov."""
+    global _interactive_imports_done
+    if _interactive_imports_done:
+        return
+
+    global pyperclip, PromptSession, Application, get_app
+    global StyleAndTextTuples, FileHistory, KeyBindings, Layout
+    global Float, FloatContainer, Window, FormattedTextControl
+    global ScrollbarMargin, Dialog, Frame, TextArea
+
+    import pyperclip as _pyperclip
+    pyperclip = _pyperclip
+
+    from prompt_toolkit import PromptSession as _PromptSession
+    from prompt_toolkit.application import Application as _Application
+    from prompt_toolkit.application.current import get_app as _get_app
+    from prompt_toolkit.formatted_text import StyleAndTextTuples as _StyleAndTextTuples
+    from prompt_toolkit.history import FileHistory as _FileHistory
+    from prompt_toolkit.key_binding import KeyBindings as _KeyBindings
+    from prompt_toolkit.layout import Layout as _Layout
+    from prompt_toolkit.layout.containers import Float as _Float, FloatContainer as _FloatContainer, Window as _Window
+    from prompt_toolkit.layout.controls import FormattedTextControl as _FormattedTextControl
+    from prompt_toolkit.layout.margins import ScrollbarMargin as _ScrollbarMargin
+    from prompt_toolkit.widgets import Dialog as _Dialog, Frame as _Frame, TextArea as _TextArea
+
+    PromptSession = _PromptSession
+    Application = _Application
+    get_app = _get_app
+    StyleAndTextTuples = _StyleAndTextTuples
+    FileHistory = _FileHistory
+    KeyBindings = _KeyBindings
+    Layout = _Layout
+    Float = _Float
+    FloatContainer = _FloatContainer
+    Window = _Window
+    FormattedTextControl = _FormattedTextControl
+    ScrollbarMargin = _ScrollbarMargin
+    Dialog = _Dialog
+    Frame = _Frame
+    TextArea = _TextArea
+
+    _interactive_imports_done = True
 
 
 def resolve_crossrefs_v2(library):
@@ -55,37 +88,6 @@ def library_to_dict(library):
             entry_dict[field_key] = field.value
         result[entry.key] = entry_dict  # Original case!
     return result
-
-
-class OldHighlightLineProcessor(Processor):
-    """
-    En Processor som inverterar färger (reverse) på den rad där cursorn befinner sig.
-    Fungerar i äldre prompt_toolkit-versioner som använder run(...).
-    
-    'apply_transformation' gör ingenting men måste finnas
-    för att klassen inte ska vara "abstract".
-    'run(...)' är det äldre API:t där vi får tokens och kan modifiera dem.
-    """
-
-    def apply_transformation(self, transformation_input):
-        # Tom, för att inte klassen ska vara abstrakt i vissa prompt_toolkit-versioner.
-        return transformation_input
-
-    def run(self, cli, document, lineno, source_to_display, tokens):
-        """
-        Anropas i äldre prompt_toolkit för varje rad. 
-        'tokens' är en lista av (style_str, text).
-        'document.cursor_position_row' säger vilken rad markören står på.
-        Om lineno == cursor-line => "reverse" i stilsträngen.
-        """
-        if lineno == document.cursor_position_row:
-            inverted = []
-            for style_str, text in tokens:
-                new_style = style_str + " reverse" if style_str else "reverse"
-                inverted.append((new_style, text))
-            return inverted
-        else:
-            return tokens
 
 
 # -------------------------------------------------
@@ -201,9 +203,9 @@ def safe_latex_to_text(x):
         return x or ""
 
 def copy_to_clipboard(txt):
+    _ensure_interactive_imports()
     try:
         pyperclip.copy(txt)
-        # print("Reference copied to clipboard.")
     except Exception:
         pass
 
@@ -777,20 +779,29 @@ def search_entries(query):
         print("Ingen fil är laddad.")
         return
 
-    qterms= [x.lower() for x in query.split() if x.lower()!="--debug"]
-    scored= _search_and_score_entries(qterms)
-    results = scored
-    perfects= [s for s in scored if s["score"]>=100]
-    if len(perfects)>5:
-        if LANGUAGE=="sv":
-            print(f"\nFler än 5 perfekta träffar ({len(perfects)}). Kompakt vy...\n")
+    qterms = [x.lower() for x in query.split() if x.lower() != "--debug"]
+
+    # Steg 1: Poängsätt alla (snabbt, ingen formatering)
+    scored_raw = _score_entries(qterms)
+
+    # Steg 2: Räkna perfekta träffar
+    num_perfects = sum(1 for idx, score in scored_raw if score >= 100)
+
+    if num_perfects > 5:
+        if LANGUAGE == "sv":
+            print(f"\nFler än 5 perfekta träffar ({num_perfects}). Kompakt vy...\n")
         else:
-            print(f"\nMore than 5 perfect matches ({len(perfects)}). Switching to compact view...\n")
-        # search_entries_compact(query,25)
+            print(f"\nMore than 5 perfect matches ({num_perfects}). Switching to compact view...\n")
+        # Formatera för kompakt vy (behöver fler resultat)
+        scored = _format_scored_entries(scored_raw, limit=50)
+        results = scored
         interactive_result_view_compact(scored, qterms)
         return
 
-    last_shown_results= scored[:5]
+    # Steg 3: Formatera bara top 5 för standardvy
+    scored = _format_scored_entries(scored_raw, limit=5)
+    results = scored
+    last_shown_results = scored
     if LANGUAGE=="sv":
         print("\nSökresultat (standardvy, max 5):\n")
     else:
@@ -863,20 +874,18 @@ def _try_int_year(s):
         return -999999
 
 
-def _search_and_score_entries(qterms, limit=None):
+def _score_entries(qterms):
     """
-    Söker och poängsätter entries.
+    Poängsätter entries utan formatering (snabbt).
 
-    Args:
-        qterms: Lista med söktermer (lowercase)
-        limit: Max antal resultat att formatera (None = alla)
+    Returns:
+        Lista av (idx, score) tupler, sorterade fallande på poäng.
     """
     if not qterms:
         return []
     _prepare_processed_entries()
     arr = list(bib_data.values())
 
-    # Steg 1: Poängsätt alla entries (snabbt, ingen LaTeX-konvertering)
     scored = []
     for (idx, combined_lower) in processed_entries_cache:
         ex = 0
@@ -900,10 +909,20 @@ def _search_and_score_entries(qterms, limit=None):
         total = e_score + f_score
         scored.append((idx, total))
 
-    # Steg 2: Sortera på poäng + år
+    # Sortera på poäng + år
     scored.sort(key=lambda x: (x[1], _try_int_year(arr[x[0]].get("year", ""))), reverse=True)
+    return scored
 
-    # Steg 3: Formatera bara top N (dyrt med LaTeX-konvertering)
+
+def _format_scored_entries(scored, limit=None):
+    """
+    Formaterar poängsatta entries för visning.
+
+    Args:
+        scored: Lista av (idx, score) tupler
+        limit: Max antal att formatera (None = alla)
+    """
+    arr = list(bib_data.values())
     if limit is not None:
         scored = scored[:limit]
 
@@ -919,8 +938,16 @@ def _search_and_score_entries(qterms, limit=None):
             "year": y_s,
             "title": ti
         })
-
     return out
+
+
+def _search_and_score_entries(qterms, limit=None):
+    """
+    Söker, poängsätter och formaterar entries.
+    Wrapper för bakåtkompatibilitet.
+    """
+    scored = _score_entries(qterms)
+    return _format_scored_entries(scored, limit)
 
 # *** Här är de nya trunkeringsfunktionerna *** #
 
@@ -1268,12 +1295,11 @@ def search_entries_compact(query, max_results=10):
     if not bib_data:
         print("Ingen fil är laddad.")
         return
-    qterms= [x.lower() for x in query.split() if x.lower()!="--debug"]
+    qterms = [x.lower() for x in query.split() if x.lower() != "--debug"]
 
-    scored= _search_and_score_entries(qterms)
-    top= scored[:max_results]
-    last_shown_results= top
-    original_results = top  # Spara ursprungliga resultat
+    scored = _search_and_score_entries(qterms, limit=max_results)
+    last_shown_results = scored
+    original_results = scored  # Spara ursprungliga resultat
 
 
     if LANGUAGE=="sv":
@@ -1281,7 +1307,7 @@ def search_entries_compact(query, max_results=10):
     else:
         print(f"\nSearch results (compact view, {max_results} rader):\n")
 
-    for i, s in enumerate(top):
+    for i, s in enumerate(scored):
         line= build_compact_line(
             index= i+1,
             score= s["score"],
@@ -1393,8 +1419,9 @@ Commands:
 """)
 
 def interactive_shell():
+    _ensure_interactive_imports()
     load_language_setting()
-    session= PromptSession(history=FileHistory(HISTORY_FILE))
+    session = PromptSession(history=FileHistory(HISTORY_FILE))
 
     while True:
         try:
@@ -1527,13 +1554,14 @@ def update_text_area_with_results(new_results):
 def interactive_result_view_compact(results, query_terms):
     """
     Interaktiv kompakt vy baserad på Window+FormattedTextControl i stället för TextArea.
-    Fungerar även i äldre prompt_toolkit-versioner. 
+    Fungerar även i äldre prompt_toolkit-versioner.
     Vi använder en scrollbar, highlightar vald rad och kan trycka "enter" etc.
 
     - global body_window => så att update_text_area_with_results(...) kan referera till den.
     """
+    _ensure_interactive_imports()
     global original_results, last_shown_results
-    global body_window  # <-- Vi deklarerar att vi vill använda en global variabel.
+    global body_window
 
     original_results = results
     last_shown_results = results
