@@ -1505,10 +1505,14 @@ def interactive_shell():
                     print("Invalid language (only 'sv' or 'en').")
                 continue
 
-            if LANGUAGE=="sv":
-                print("Okänt kommando. 'hjälp' för lista.")
+            # Anta att okänt kommando är söktermer
+            if bib_data:
+                search_entries(line)
             else:
-                print("Unknown command. 'help' for list.")
+                if LANGUAGE == "sv":
+                    print("Ingen fil laddad. Använd 'ladda <fil>' först.")
+                else:
+                    print("No file loaded. Use 'load <file>' first.")
         except (EOFError,KeyboardInterrupt):
             if LANGUAGE=="sv":
                 print("\nAvslutar...\n")
