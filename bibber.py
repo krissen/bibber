@@ -131,11 +131,13 @@ def get_last_used_file():
             with open(last_used, "r") as f:
                 data=json.load(f)
                 return data.get("last_used")
-        except:
+        except (json.JSONDecodeError, IOError):
             pass
     return None
 
 def md5sum(file_path):
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"Filen finns inte: {file_path}")
     with open(file_path,"rb") as fp:
         return hashlib.md5(fp.read()).hexdigest()
 
@@ -143,7 +145,7 @@ def load_from_cache(cache_file):
     try:
         with open(cache_file,"r") as f:
             return json.load(f)
-    except:
+    except (json.JSONDecodeError, IOError):
         return None
 
 def save_to_cache(data, cache_file):
@@ -153,14 +155,14 @@ def save_to_cache(data, cache_file):
 def safe_latex_to_text(x):
     try:
         return LatexNodes2Text().latex_to_text(x or "")
-    except:
+    except Exception:
         return x or ""
 
 def copy_to_clipboard(txt):
     try:
         pyperclip.copy(txt)
         # print("Reference copied to clipboard.")
-    except:
+    except Exception:
         pass
 
 def debug_log(message):
@@ -179,7 +181,7 @@ def load_language_setting():
                 data=json.load(f)
                 if "language" in data:
                     LANGUAGE=data["language"]
-        except:
+        except (json.JSONDecodeError, IOError):
             pass
 
 def save_language_setting(lang):
@@ -684,7 +686,7 @@ def get_first_search_result(query_terms, output_format="apa"):
     actual_idx = first["idx"]
     keys = list(bib_data.keys())
     key = keys[actual_idx]
-    entry = list(bib_data.values())[actual_idx]
+    entry = bib_data[key]
 
     return get_output(key, entry, output_format)
 
@@ -744,8 +746,10 @@ def search_entries(query):
     else:
         print("\nSearch results (standard view, max 5):\n")
 
+    keys = list(bib_data.keys())
     for i, item in enumerate(last_shown_results):
-        e= list(bib_data.values())[item["idx"]]
+        key = keys[item["idx"]]
+        e = bib_data[key]
         ref_s= build_standard_reference_short(e)
         print(f"[{i+1}] {ref_s}")
         print(f"    Score: {item['score']:.1f}%\n")
@@ -763,7 +767,7 @@ def parse_authors_for_compact(entry,semicolon=True):
         if len(parts)==2:
             ln= parts[0].strip()
             fn= parts[1].split()
-            if fn:
+            if fn and fn[0]:
                 init= fn[0][0].upper()
                 out.append(f"{ln} {init}")
             else:
@@ -817,6 +821,8 @@ def _try_int_year(s):
 
 
 def _search_and_score_entries(qterms):
+    if not qterms:
+        return []
     _prepare_processed_entries()
     arr = list(bib_data.values())
     out = []
@@ -1292,7 +1298,9 @@ def _do_copy(index):
     real_idx = result["idx"]  # den index ni satte i _search_and_score_entries
 
     # Hämta den riktiga bibposten:
-    bib_entry = list(bib_data.values())[real_idx]
+    keys = list(bib_data.keys())
+    key = keys[real_idx]
+    bib_entry = bib_data[key]
 
     # Skicka bibposten till generate_apa:
     apa = generate_apa(bib_entry)
@@ -1519,7 +1527,9 @@ def interactive_result_view_compact(results, query_terms):
     def on_enter(event):
         if 0 <= selected_row < len(results):
             actual_idx = results[selected_row]["idx"]
-            e = list(bib_data.values())[actual_idx]
+            keys = list(bib_data.keys())
+            key = keys[actual_idx]
+            e = bib_data[key]
             apa = generate_apa(e)
             copy_to_clipboard(apa)
             show_popup_dialog(apa, floats, body_window)
