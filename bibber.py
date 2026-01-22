@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
+import argparse
 import collections
 import collections.abc
 import hashlib
@@ -69,7 +70,8 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 HISTORY_FILE = os.path.join(CACHE_DIR, "history.txt")
 
-DEBUG_MODE = ("--debug" in sys.argv)
+DEBUG_MODE = False
+VERBOSE_MODE = False
 
 bib_data = None
 processed_entries_cache = None
@@ -83,28 +85,36 @@ LANGUAGE = "en"
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
 
 # -------------------------------------------------
-# Eget 'help'
+# Argument-parsning
 # -------------------------------------------------
-if "--help" in sys.argv:
-    print("""
-Usage:
-  python bibber.py [options] [file.bib] [search terms]
-
-Options:
-  --debug      : print debug information
-  --help       : this help text
-
-Interactive commands:
-  load <file>    : Load .bib
-  search <terms> : Standard search
-  sc <terms> [n] : Compact search
-  copy <index>   : Copy reference
-  lang <sv|en>   : Switch language
-  help           : This help
-  exit / quit    : Quit
-
-""")
-    sys.exit(0)
+def parse_args():
+    """Parsar kommandoradsargument med argparse."""
+    parser = argparse.ArgumentParser(
+        description="Bibber - BibTeX-sökverktyg",
+        epilog="""
+Interaktiva kommandon:
+  ladda <fil>      : Ladda .bib
+  sök <termer>     : Standardsökning
+  sc <termer> [n]  : Kompakt sökning
+  kopiera <index>  : Kopiera referens
+  lang <sv|en>     : Byt språk
+  hjälp            : Hjälptext
+  avsluta          : Avsluta
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("query", nargs="*", help="Söktermer")
+    parser.add_argument("-f", "--format", choices=["apa", "bib"], default="apa",
+                        help="Outputformat (default: apa)")
+    parser.add_argument("-k", "--key", help="Hämta specifik citation key direkt")
+    parser.add_argument("-1", "--one", action="store_true",
+                        help="Icke-interaktivt: ge första träffen och avsluta")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Visa extra information (t.ex. 'Laddar fil...')")
+    parser.add_argument("-d", "--debug", action="store_true",
+                        help="Debug-läge")
+    parser.add_argument("-b", "--bibfile", help=".bib-fil att ladda")
+    return parser.parse_args()
 
 # -------------------------------------------------
 # 1) Fil & hjälp
@@ -193,44 +203,56 @@ def extract_entrytypes(file_path):
                 out[key.lower()] = et.lower()
     return out
 
-def load_bibtex(file_path):
-    global bib_data, processed_entries_cache
-    file_path= os.path.expanduser(file_path)
-    cfile= os.path.join(CACHE_DIR, md5sum(file_path)+".json")
+def load_bibtex(file_path, verbose=None):
+    """
+    Laddar BibTeX-fil.
 
-    cached= load_from_cache(cfile)
+    Args:
+        file_path: Sökväg till .bib-fil
+        verbose: Om True, visa laddningsmeddelanden. Om None, använd VERBOSE_MODE.
+    """
+    global bib_data, processed_entries_cache
+    if verbose is None:
+        verbose = VERBOSE_MODE
+
+    file_path = os.path.expanduser(file_path)
+    cfile = os.path.join(CACHE_DIR, md5sum(file_path) + ".json")
+
+    cached = load_from_cache(cfile)
     if cached:
         if DEBUG_MODE:
             print(f"[DEBUG] Loading from cache: {cfile}")
-        bib_data= cached
-        if LANGUAGE=="sv":
-            print(f"Laddar senast använda fil: {file_path}")
-        else:
-            print(f"Loading last used file: {file_path}")
+        bib_data = cached
+        if verbose:
+            if LANGUAGE == "sv":
+                print(f"Laddar senast använda fil: {file_path}", file=sys.stderr)
+            else:
+                print(f"Loading last used file: {file_path}", file=sys.stderr)
         save_last_used_file(file_path)
     else:
         try:
-            if LANGUAGE=="sv":
-                print(f"Laddar fil: {file_path}")
-            else:
-                print(f"Loading file: {file_path}")
-            with open(file_path,"r",encoding="utf-8") as bf:
-                parser= biblib.bib.Parser()
-                parsed_db= parser.parse(bf, log_fp=sys.stderr).get_entries()
-                resolved= biblib.bib.resolve_crossrefs(parsed_db)
-                bib_data=resolved
+            if verbose:
+                if LANGUAGE == "sv":
+                    print(f"Laddar fil: {file_path}", file=sys.stderr)
+                else:
+                    print(f"Loading file: {file_path}", file=sys.stderr)
+            with open(file_path, "r", encoding="utf-8") as bf:
+                parser = biblib.bib.Parser()
+                parsed_db = parser.parse(bf, log_fp=sys.stderr).get_entries()
+                resolved = biblib.bib.resolve_crossrefs(parsed_db)
+                bib_data = resolved
 
-            etypes= extract_entrytypes(file_path)
+            etypes = extract_entrytypes(file_path)
             for k, e in bib_data.items():
-                if e.get("entrytype","unknown")=="unknown":
-                    e["entrytype"]= etypes.get(k.lower(),"unknown")
+                if e.get("entrytype", "unknown") == "unknown":
+                    e["entrytype"] = etypes.get(k.lower(), "unknown")
 
             save_to_cache(bib_data, cfile)
             save_last_used_file(file_path)
         except Exception as e:
-            print("Error loading bib:", e)
+            print(f"Error loading bib: {e}", file=sys.stderr)
             return
-    processed_entries_cache=None
+    processed_entries_cache = None
 
 # -------------------------------------------------
 # 4) En förenklad APA, tar hänsyn till LANGUAGE
@@ -554,6 +576,118 @@ def generate_apa(entry):
 
     apa = " ".join(apa.split())
     return apa
+
+
+def generate_bib_entry(key, entry):
+    """
+    Genererar BibTeX-entry som sträng.
+
+    Args:
+        key: Citation key (t.ex. 'niemi2024')
+        entry: Dict med BibTeX-fält
+
+    Returns:
+        BibTeX-formaterad sträng
+    """
+    entrytype = entry.get('entrytype', 'misc')
+    lines = [f"@{entrytype}{{{key},"]
+
+    # Ordning på fält som är vanlig i BibTeX
+    field_order = ['author', 'editor', 'title', 'booktitle', 'journal', 'journaltitle',
+                   'year', 'date', 'volume', 'number', 'pages', 'publisher', 'location',
+                   'address', 'institution', 'school', 'doi', 'url', 'note', 'annotate']
+
+    # Lägg först till fält i preferred order
+    added_fields = set()
+    for field in field_order:
+        if field in entry and field != 'entrytype':
+            value = entry[field]
+            if value:
+                lines.append(f"  {field} = {{{value}}},")
+                added_fields.add(field)
+
+    # Lägg till övriga fält
+    for field, value in entry.items():
+        if field != 'entrytype' and field not in added_fields and value:
+            lines.append(f"  {field} = {{{value}}},")
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def get_output(key, entry, output_format):
+    """
+    Returnerar referens i önskat format.
+
+    Args:
+        key: Citation key
+        entry: BibTeX-entry dict
+        output_format: 'apa' eller 'bib'
+
+    Returns:
+        Formaterad sträng
+    """
+    if output_format == "bib":
+        return generate_bib_entry(key, entry)
+    else:
+        return generate_apa(entry)
+
+
+def get_reference_by_key(citation_key, output_format="apa"):
+    """
+    Hämtar referens baserat på citation key.
+
+    Args:
+        citation_key: Citation key att leta efter (case-insensitive)
+        output_format: 'apa' eller 'bib'
+
+    Returns:
+        Formaterad referens eller None om ej funnen
+    """
+    if not bib_data:
+        return None
+
+    # Sök case-insensitive
+    key_lower = citation_key.lower()
+    for key, entry in bib_data.items():
+        if key.lower() == key_lower:
+            return get_output(key, entry, output_format)
+
+    return None
+
+
+def get_first_search_result(query_terms, output_format="apa"):
+    """
+    Kör sökning och returnerar första träffen.
+
+    Args:
+        query_terms: Lista med söktermer
+        output_format: 'apa' eller 'bib'
+
+    Returns:
+        Formaterad referens eller None om inga träffar
+    """
+    if not bib_data:
+        return None
+
+    if not query_terms:
+        return None
+
+    qterms = [x.lower() for x in query_terms]
+    scored = _search_and_score_entries(qterms)
+
+    if not scored:
+        return None
+
+    # Ta första träffen
+    first = scored[0]
+    actual_idx = first["idx"]
+    keys = list(bib_data.keys())
+    key = keys[actual_idx]
+    entry = list(bib_data.values())[actual_idx]
+
+    return get_output(key, entry, output_format)
+
 
 # -------------------------------------------------
 # 5) Standard-lång vy
@@ -1590,26 +1724,92 @@ def show_popup(title_text, body_text):
 # -------------------------------------------------
 # 9) main
 # -------------------------------------------------
-if __name__=="__main__":
+if __name__ == "__main__":
     load_language_setting()
-    args= sys.argv[1:]
-    bib_file= next((a for a in args if os.path.isfile(a)), None)
-    query= " ".join(a for a in args if not os.path.isfile(a) and not a.startswith("--"))
+    args = parse_args()
+
+    # Sätt globala flaggor
+    DEBUG_MODE = args.debug
+    VERBOSE_MODE = args.verbose
+
+    # Bestäm bib-fil
+    bib_file = args.bibfile
+
+    # Kolla om query innehåller en fil (bakåtkompatibilitet)
+    if not bib_file and args.query:
+        for q in args.query:
+            if os.path.isfile(q):
+                bib_file = q
+                args.query.remove(q)
+                break
 
     if not bib_file:
-        bf= get_last_used_file()
+        bf = get_last_used_file()
         if bf:
-            bib_file= bf
+            bib_file = bf
         else:
-            if LANGUAGE=="sv":
-                print("Ingen .bib fil specad och ingen senast använd fil funnen.")
-            else:
-                print("No .bib file specified and no last used file found.")
+            # I icke-interaktivt läge, skriv fel och avsluta
+            if args.key or args.one:
+                if LANGUAGE == "sv":
+                    print("Ingen .bib-fil specad och ingen senast använd fil funnen.", file=sys.stderr)
+                else:
+                    print("No .bib file specified and no last used file found.", file=sys.stderr)
+                sys.exit(1)
 
+    # Ladda bib-fil
     if bib_file:
-        load_bibtex(bib_file)
+        load_bibtex(bib_file, verbose=VERBOSE_MODE)
 
-    if query and bib_data:
+    # Icke-interaktivt läge: -k (key lookup)
+    if args.key:
+        if not bib_data:
+            if LANGUAGE == "sv":
+                print("Ingen data laddad.", file=sys.stderr)
+            else:
+                print("No data loaded.", file=sys.stderr)
+            sys.exit(1)
+
+        output = get_reference_by_key(args.key, args.format)
+        if output:
+            print(output)
+            sys.exit(0)
+        else:
+            if LANGUAGE == "sv":
+                print(f"Hittade ingen referens med key '{args.key}'.", file=sys.stderr)
+            else:
+                print(f"No reference found with key '{args.key}'.", file=sys.stderr)
+            sys.exit(1)
+
+    # Icke-interaktivt läge: -1/--one (första sökträffen)
+    if args.one:
+        if not bib_data:
+            if LANGUAGE == "sv":
+                print("Ingen data laddad.", file=sys.stderr)
+            else:
+                print("No data loaded.", file=sys.stderr)
+            sys.exit(1)
+
+        if not args.query:
+            if LANGUAGE == "sv":
+                print("Inga söktermer angivna.", file=sys.stderr)
+            else:
+                print("No search terms provided.", file=sys.stderr)
+            sys.exit(1)
+
+        output = get_first_search_result(args.query, args.format)
+        if output:
+            print(output)
+            sys.exit(0)
+        else:
+            if LANGUAGE == "sv":
+                print("Inga träffar.", file=sys.stderr)
+            else:
+                print("No results found.", file=sys.stderr)
+            sys.exit(1)
+
+    # Interaktivt läge (default)
+    if args.query and bib_data:
+        query = " ".join(args.query)
         search_entries(query)
 
     interactive_shell()
