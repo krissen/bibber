@@ -111,7 +111,7 @@ text_area = None
 
 LANGUAGE = "en"
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
-CACHE_VERSION = "2"  # Bump vid ändringar i cache-format
+CACHE_VERSION = "3"  # Bump vid ändringar i cache-format (3: sökindex)
 
 # -------------------------------------------------
 # Argument-parsning
@@ -171,23 +171,32 @@ def md5sum(file_path):
         return hashlib.md5(fp.read()).hexdigest()
 
 def load_from_cache(cache_file):
+    """Laddar cache och returnerar (entries, search_index) eller (None, None)."""
     try:
         with open(cache_file, "r") as f:
             cached = json.load(f)
             if isinstance(cached, dict) and cached.get("version") == CACHE_VERSION:
-                return cached["entries"]
-            return None  # Gammal cache-version
+                return cached["entries"], cached.get("search_index")
+            return None, None  # Gammal cache-version
     except (json.JSONDecodeError, IOError):
-        return None
+        return None, None
 
 
-def save_to_cache(data, cache_file):
+def save_to_cache(data, cache_file, search_index=None):
+    """Sparar bib-data och valfritt sökindex till cache."""
+    cache_obj = {"version": CACHE_VERSION, "entries": data}
+    if search_index is not None:
+        cache_obj["search_index"] = search_index
     with open(cache_file, "w") as f:
-        json.dump({"version": CACHE_VERSION, "entries": data}, f)
+        json.dump(cache_obj, f)
+
+# Global instans för LaTeX-konvertering (undvik att skapa ny varje gång)
+_latex_converter = LatexNodes2Text()
+
 
 def safe_latex_to_text(x):
     try:
-        return LatexNodes2Text().latex_to_text(x or "")
+        return _latex_converter.latex_to_text(x or "")
     except Exception:
         return x or ""
 
@@ -227,6 +236,18 @@ def save_language_setting(lang):
 # -------------------------------------------------
 # 3) BibTeX-laddning
 # -------------------------------------------------
+def _build_search_index(entries):
+    """Bygger sökindex med normaliserad text (hanterar LaTeX/umlauts)."""
+    search_index = []
+    for i, e in enumerate(entries.values()):
+        t = safe_latex_to_text(e.get("title", ""))
+        a = safe_latex_to_text(e.get("author", e.get("editor", "Unknown")))
+        j = safe_latex_to_text(e.get("journaltitle", e.get("journal", e.get("booktitle", ""))))
+        combined = f"{t} {a} {j}".lower()
+        search_index.append(combined)
+    return search_index
+
+
 def load_bibtex(file_path, verbose=None):
     """
     Laddar BibTeX-fil.
@@ -242,11 +263,16 @@ def load_bibtex(file_path, verbose=None):
     file_path = os.path.expanduser(file_path)
     cfile = os.path.join(CACHE_DIR, md5sum(file_path) + ".json")
 
-    cached = load_from_cache(cfile)
-    if cached:
+    cached_entries, cached_index = load_from_cache(cfile)
+    if cached_entries:
         if DEBUG_MODE:
             print(f"[DEBUG] Loading from cache: {cfile}")
-        bib_data = cached
+        bib_data = cached_entries
+        # Återställ sökindex från cache
+        if cached_index:
+            processed_entries_cache = [(i, s) for i, s in enumerate(cached_index)]
+        else:
+            processed_entries_cache = None
         if verbose:
             if LANGUAGE == "sv":
                 print(f"Laddar senast använda fil: {file_path}", file=sys.stderr)
@@ -270,12 +296,15 @@ def load_bibtex(file_path, verbose=None):
                 for block in library.failed_blocks:
                     print(f"Varning: Parsningsfel", file=sys.stderr)
 
-            save_to_cache(bib_data, cfile)
+            # Bygg och cacha sökindex
+            search_index = _build_search_index(bib_data)
+            processed_entries_cache = [(i, s) for i, s in enumerate(search_index)]
+
+            save_to_cache(bib_data, cfile, search_index)
             save_last_used_file(file_path)
         except Exception as e:
             print(f"Error loading bib: {e}", file=sys.stderr)
             return
-    processed_entries_cache = None
 
 # -------------------------------------------------
 # 4) En förenklad APA, tar hänsyn till LANGUAGE
@@ -697,7 +726,7 @@ def get_first_search_result(query_terms, output_format="apa"):
         return None
 
     qterms = [x.lower() for x in query_terms]
-    scored = _search_and_score_entries(qterms)
+    scored = _search_and_score_entries(qterms, limit=1)
 
     if not scored:
         return None
@@ -813,20 +842,13 @@ def parse_year_4chars(entry):
     return y[:4]
 
 def _prepare_processed_entries():
+    """Förbereder sökindex om det inte redan finns i cache."""
     global processed_entries_cache
     if processed_entries_cache is not None:
         return
-    arr= list(bib_data.values())
-
-    def combine(e):
-        t= safe_latex_to_text(e.get("title",""))
-        a= safe_latex_to_text(e.get("author", e.get("editor","Unknown")))
-        j= safe_latex_to_text(e.get("journaltitle", e.get("journal", e.get("booktitle",""))))
-        return f"{t} {a} {j}"
-
-    with ThreadPoolExecutor() as ex:
-        results= list(ex.map(combine, arr))
-    processed_entries_cache= [(i, results[i].lower()) for i in range(len(arr))]
+    # Bygg index on-the-fly (sker bara om cache saknas)
+    search_index = _build_search_index(bib_data)
+    processed_entries_cache = [(i, s) for i, s in enumerate(search_index)]
 
 def _try_int_year(s):
     """
@@ -841,13 +863,21 @@ def _try_int_year(s):
         return -999999
 
 
-def _search_and_score_entries(qterms):
+def _search_and_score_entries(qterms, limit=None):
+    """
+    Söker och poängsätter entries.
+
+    Args:
+        qterms: Lista med söktermer (lowercase)
+        limit: Max antal resultat att formatera (None = alla)
+    """
     if not qterms:
         return []
     _prepare_processed_entries()
     arr = list(bib_data.values())
-    out = []
 
+    # Steg 1: Poängsätt alla entries (snabbt, ingen LaTeX-konvertering)
+    scored = []
     for (idx, combined_lower) in processed_entries_cache:
         ex = 0
         fuzzies = []
@@ -868,21 +898,28 @@ def _search_and_score_entries(qterms):
         e_score = (ex / len(qterms)) * 100
         f_score = (sum(fuzzies) / len(qterms)) * 100 if fuzzies else 0
         total = e_score + f_score
+        scored.append((idx, total))
 
+    # Steg 2: Sortera på poäng + år
+    scored.sort(key=lambda x: (x[1], _try_int_year(arr[x[0]].get("year", ""))), reverse=True)
+
+    # Steg 3: Formatera bara top N (dyrt med LaTeX-konvertering)
+    if limit is not None:
+        scored = scored[:limit]
+
+    out = []
+    for idx, total in scored:
         authors_s = parse_authors_for_compact(arr[idx], semicolon=True)
         y_s = parse_year_4chars(arr[idx])
         ti = safe_latex_to_text(arr[idx].get("title", "Untitled")).strip()
-
         out.append({
             "idx": idx,
             "score": total,
             "authors": authors_s,
-            "year": y_s,   # sträng, ex. "2024", "fort", "????"
+            "year": y_s,
             "title": ti
         })
 
-    # Nu sorterar vi fallande på (score, year_int)
-    out.sort(key=lambda x: (x["score"], _try_int_year(x["year"])), reverse=True)
     return out
 
 # *** Här är de nya trunkeringsfunktionerna *** #
