@@ -509,9 +509,22 @@ def generate_apa(entry):
             if val and val not in seen:
                 orgs.append(val)
                 seen.add(val)
-        apa += f"*{title}*."
-        if orgs:
-            apa += " " + ", ".join(orgs) + "."
+        # Bestäm typ av arbete (språkanpassat)
+        if et == "phdthesis":
+            thesis_label = "Doktorsavhandling" if LANGUAGE == "sv" else "Doctoral dissertation"
+        elif et == "mastersthesis":
+            thesis_label = "Examensarbete" if LANGUAGE == "sv" else "Master's thesis"
+        else:
+            thesis_label = entry.get("type", "").strip()
+
+        if thesis_label and orgs:
+            apa += f"*{title}* [{thesis_label}, {', '.join(orgs)}]."
+        elif thesis_label:
+            apa += f"*{title}* [{thesis_label}]."
+        elif orgs:
+            apa += f"*{title}*. {', '.join(orgs)}."
+        else:
+            apa += f"*{title}*."
         # Lägg till eventuell note/annotate
         note = entry.get("note") or entry.get("annotate")
         if note:
@@ -774,8 +787,15 @@ def build_standard_reference_short(entry):
         source= safe_latex_to_text(entry.get("booktitle","")).strip()
     elif et=="book":
         source=""
-    elif et=="phdthesis":
-        source= "PhD Thesis at "+ safe_latex_to_text(entry.get("publisher",""))
+    elif et in ("phdthesis", "mastersthesis", "thesis"):
+        inst = safe_latex_to_text(entry.get("institution", "") or entry.get("school", "") or entry.get("publisher", "")).strip()
+        if et == "phdthesis":
+            label = "Diss." if LANGUAGE == "sv" else "PhD Thesis"
+        elif et == "mastersthesis":
+            label = "Examensarb." if LANGUAGE == "sv" else "Master's Thesis"
+        else:
+            label = entry.get("type", "Thesis").strip()
+        source = f"{label}, {inst}" if inst else label
     else:
         source= safe_latex_to_text(entry.get("journal", entry.get("booktitle",""))).strip()
 
