@@ -1833,6 +1833,7 @@ if __name__ == "__main__":
     VERBOSE_MODE = args.verbose
 
     # Bestäm bib-fil
+    DEFAULT_BIB = os.path.expanduser("~/Documents/lektionsplanering/kallor.bib")
     bib_file = args.bibfile
 
     # Kolla om query innehåller en fil (bakåtkompatibilitet)
@@ -1844,12 +1845,13 @@ if __name__ == "__main__":
                 break
 
     if not bib_file:
-        bf = get_last_used_file()
-        if bf:
-            bib_file = bf
+        if os.path.isfile(DEFAULT_BIB):
+            bib_file = DEFAULT_BIB
         else:
-            # I icke-interaktivt läge, skriv fel och avsluta
-            if args.key or args.one:
+            bf = get_last_used_file()
+            if bf:
+                bib_file = bf
+            elif args.key or args.one:
                 if LANGUAGE == "sv":
                     print("Ingen .bib-fil specad och ingen senast använd fil funnen.", file=sys.stderr)
                 else:
