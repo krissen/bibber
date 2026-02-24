@@ -139,7 +139,9 @@ Interaktiva kommandon:
                         help="Outputformat (default: apa)")
     parser.add_argument("-k", "--key", help="Hämta specifik citation key direkt")
     parser.add_argument("-1", "--one", action="store_true",
-                        help="Icke-interaktivt: ge första träffen och avsluta")
+                        help="Icke-interaktivt: ge första träffen och avsluta (genväg för -n1)")
+    parser.add_argument("-n", "--num", type=int, metavar="N",
+                        help="Icke-interaktivt: visa N bästa träffar och avsluta")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Visa extra information (t.ex. 'Laddar fil...')")
     parser.add_argument("-d", "--debug", action="store_true",
@@ -713,13 +715,22 @@ def get_reference_by_key(citation_key, output_format="apa"):
 def get_first_search_result(query_terms, output_format="apa"):
     """
     Kör sökning och returnerar första träffen.
+    Wrapper för bakåtkompatibilitet.
+    """
+    return get_top_search_results(query_terms, output_format, limit=1)
+
+
+def get_top_search_results(query_terms, output_format="apa", limit=1):
+    """
+    Kör sökning och returnerar de N bästa träffarna.
 
     Args:
         query_terms: Lista med söktermer
         output_format: 'apa' eller 'bib'
+        limit: Antal träffar att returnera
 
     Returns:
-        Formaterad referens eller None om inga träffar
+        Formaterad referens(er) eller None om inga träffar
     """
     if not bib_data:
         return None
@@ -728,19 +739,19 @@ def get_first_search_result(query_terms, output_format="apa"):
         return None
 
     qterms = [x.lower() for x in query_terms]
-    scored = _search_and_score_entries(qterms, limit=1)
+    scored = _search_and_score_entries(qterms, limit=limit)
 
     if not scored:
         return None
 
-    # Ta första träffen
-    first = scored[0]
-    actual_idx = first["idx"]
     keys = list(bib_data.keys())
-    key = keys[actual_idx]
-    entry = bib_data[key]
+    lines = []
+    for item in scored:
+        key = keys[item["idx"]]
+        entry = bib_data[key]
+        lines.append(get_output(key, entry, output_format))
 
-    return get_output(key, entry, output_format)
+    return "\n".join(lines)
 
 
 # -------------------------------------------------
@@ -1851,7 +1862,7 @@ if __name__ == "__main__":
             bf = get_last_used_file()
             if bf:
                 bib_file = bf
-            elif args.key or args.one:
+            elif args.key or args.one or args.num:
                 if LANGUAGE == "sv":
                     print("Ingen .bib-fil specad och ingen senast använd fil funnen.", file=sys.stderr)
                 else:
@@ -1882,8 +1893,9 @@ if __name__ == "__main__":
                 print(f"No reference found with key '{args.key}'.", file=sys.stderr)
             sys.exit(1)
 
-    # Icke-interaktivt läge: -1/--one (första sökträffen)
-    if args.one:
+    # Icke-interaktivt läge: -1/--one eller -n N
+    num_results = args.num if args.num else (1 if args.one else None)
+    if num_results:
         if not bib_data:
             if LANGUAGE == "sv":
                 print("Ingen data laddad.", file=sys.stderr)
@@ -1898,7 +1910,7 @@ if __name__ == "__main__":
                 print("No search terms provided.", file=sys.stderr)
             sys.exit(1)
 
-        output = get_first_search_result(args.query, args.format)
+        output = get_top_search_results(args.query, args.format, limit=num_results)
         if output:
             print(output)
             sys.exit(0)
