@@ -379,14 +379,65 @@ def build_editors_string(raw_editor_string, language="en"):
 
     return editors_str
 
+
+def build_editors_string_given_first(raw_editor_string, language="en"):
+    """
+    APA 7 incollection-format: redaktörer skrivs förnamn-först.
+      "F. Last & J. Doe (Eds.)"   (engelska, flera)
+      "F. Last (Ed.)"             (engelska, en)
+      "F. Last & J. Doe (red.)"   (svenska)
+    """
+    if not raw_editor_string:
+        return "Unknown Editor"
+
+    splitted_editors = raw_editor_string.split(" and ")
+
+    def parse_one_given_first(raw_name):
+        name_clean = safe_latex_to_text(raw_name.strip())
+        parts = name_clean.split(",")
+        if len(parts) == 2:
+            ln = parts[0].strip()
+            fn_parts = parts[1].split()
+            initials = [f"{p[0].upper()}." for p in fn_parts if p]
+            init_str = " ".join(initials)
+            if init_str:
+                return f"{init_str} {ln}"
+            else:
+                return ln
+        else:
+            return name_clean
+
+    editors_parsed = [parse_one_given_first(ed) for ed in splitted_editors if ed.strip()]
+
+    if len(editors_parsed) > 20:
+        editors_parsed = editors_parsed[:19] + ["..."] + [editors_parsed[-1]]
+
+    if len(editors_parsed) > 1:
+        *all_but_last, last = editors_parsed
+        editors_str = ", ".join(all_but_last) + " & " + last
+    else:
+        editors_str = editors_parsed[0] if editors_parsed else "Unknown"
+
+    if language.lower() == "en":
+        if len(splitted_editors) == 1:
+            editors_str += " (Ed.)"
+        else:
+            editors_str += " (Eds.)"
+    else:
+        editors_str += " (red.)"
+
+    return editors_str
+
+
 def generate_apa(entry):
     """
-    En (mer) APA7-liknande funktion som korrekt hanterar:
+    APA 7-formatering.
       - Flera författare eller redaktörer (upp till 20 innan '...').
       - @book där 'editor' används om 'author' saknas.
       - Svenska/engelska skillnader i u.å. / n.d., (red.) / (Ed.), etc.
-      - Tidskriftsartiklar med korrekt formaterad kursivering:
-          *Tidskriftstitel, volym* (issue), pp. sidor.
+      - Tidskriftsartiklar: *Tidskrift*, *volym*(nummer), sidor.
+      - Avhandlingar: *Titel* [Doktorsavhandling, Lärosäte].
+      - Incollection: redaktörer i förnamnsordning (F. Efternamn).
       - För @misc: visar DOI om det finns, annars URL, samt note/annotate sist inom hakparentes.
     """
     if DEBUG_MODE:
@@ -467,10 +518,8 @@ def generate_apa(entry):
     else:
         title = "Untitled"
 
-    # 5) Sidor
-    pp = entry.get("pages", "").replace("--", "–")
-    if pp:
-        pp = f"{pages_label} {pp}"
+    # 5) Sidor (raw utan prefix — prefix läggs till per entrytype)
+    pp_raw = entry.get("pages", "").replace("--", "–").strip()
 
     # 6) DOI/URL
     doi = entry.get("doi", "")
@@ -493,16 +542,29 @@ def generate_apa(entry):
 
     apa = f"{authors_str} ({yr}). "
 
+    # 9) Upplaga
+    edition_raw = safe_latex_to_text(entry.get("edition", "")).strip()
+    if edition_raw:
+        if LANGUAGE == "sv":
+            edition_str = f"({edition_raw} uppl.)"
+        else:
+            edition_str = f"({edition_raw} ed.)"
+    else:
+        edition_str = ""
+
+    # 10) Hämtningsdatum för webresurser
+    urldate = entry.get("urldate", "").strip()
+
     # ========================
     # Speciell hantering för thesis/avhandling/examensarbete
     # ========================
     thesis_types = ("phdthesis", "mastersthesis", "thesis")
-    if et in thesis_types or (et == "misc" and (entry.get("institution") or entry.get("school") or entry.get("publisher"))):
+    if et in thesis_types or (et == "misc" and (entry.get("institution") or entry.get("school")) and not entry.get("journal") and not entry.get("journaltitle")):
         # Bygg ordning institution, school, publisher, endast unika värden
         inst = safe_latex_to_text(entry.get("institution", "")).strip()
         school = safe_latex_to_text(entry.get("school", "")).strip()
-        pub = safe_latex_to_text(entry.get("publisher", "")).strip()
-        org_fields = [inst, school, pub]
+        pub_t = safe_latex_to_text(entry.get("publisher", "")).strip()
+        org_fields = [inst, school, pub_t]
         seen = set()
         orgs = []
         for val in org_fields:
@@ -537,67 +599,70 @@ def generate_apa(entry):
 
     # ============ Resten av typerna ============
     if et == "incollection":
-        # Kapitel i redigerad bok
+        # Kapitel i redigerad bok – APA 7: redaktörer i förnamnsordning
         chapter_title = title
         raw_ed = entry.get("editor", "")
-        ed_ltx = safe_latex_to_text(raw_ed)
-        ed_ltx.split(" and ")
         bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
         apa += f"{chapter_title}. "
         if bk:
             if raw_ed and raw_ed != raw_author:
-                editors_str = build_editors_string(raw_ed, LANGUAGE)
+                editors_str = build_editors_string_given_first(raw_ed, LANGUAGE)
                 apa += f"{in_b} {editors_str}, *{bk}*"
             else:
                 apa += f"{in_b} *{bk}*"
-            if pp:
-                apa += f" ({pp})"
+            if edition_str:
+                apa += f" {edition_str}"
+            if pp_raw:
+                apa += f" ({pages_label} {pp_raw})"
             apa += "."
-        if pub:
-            if loc:
-                apa += f" {loc}: {pub}."
-            else:
-                apa += f" {pub}."
-    elif et == "article":
-        apa += f"{title}."
-        j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
-        vol = entry.get("volume", "").strip()
-        num = entry.get("number", "").strip()
-        if j:
-            apa += " "
-            if vol:
-                apa += f"*{j}, {vol}*"
-            else:
-                apa += f"*{j}*"
-            if num:
-                apa += f"({num})"
-        if pp:
-            apa += f", {pp}"
-        apa += "."
-    elif et == "book":
-        apa += f"*{title}*."
+        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
             apa += f" {pub}."
-        elif loc:
-            apa += f" {loc}."
+    elif et == "article":
+        # APA 7: Titel. *Tidskrift*, *volym*(nummer), sidor.
+        apa += f"{title}. "
+        j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
+        vol = entry.get("volume", "").strip()
+        num = entry.get("number", "").strip()
+        if j:
+            apa += f"*{j}*"
+            if vol:
+                apa += f", *{vol}*"
+            if num:
+                apa += f"({num})"
+            if pp_raw:
+                apa += f", {pp_raw}"
+            apa += "."
+        elif pp_raw:
+            apa += f"{pp_raw}."
+    elif et == "book":
+        apa += f"*{title}*"
+        if edition_str:
+            apa += f" {edition_str}"
+        apa += "."
+        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
+        if loc and pub:
+            apa += f" {loc}: {pub}."
+        elif pub:
+            apa += f" {pub}."
     elif et == "inproceedings":
         bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
         howp = safe_latex_to_text(entry.get("howpublished", "")).strip()
         apa += f"{title}."
         if bk:
-            apa += f" {in_b} *{bk}*."
+            apa += f" {in_b} *{bk}*"
+            if pp_raw:
+                apa += f" ({pages_label} {pp_raw})"
+            apa += "."
         if howp:
             apa += f" {howp}."
-        if pp:
-            apa += f" {pp}."
+        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
             apa += f" {pub}."
-        elif loc:
-            apa += f" {loc}."
     elif et == "misc":
         apa += f"*{title}*."
         inst = safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip()
@@ -606,42 +671,35 @@ def generate_apa(entry):
             apa += f" {inst}."
         if series:
             apa += f" {series}."
+        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
             apa += f" {pub}."
-        elif loc:
-            apa += f" {loc}."
-        if pp:
-            apa += f" {pp}."
-        if link:
-            apa += f" {link}"
-        note = entry.get("note") or entry.get("annotate")
-        if note:
-            apa += f" [{safe_latex_to_text(note).strip()}]"
+        if pp_raw:
+            apa += f" {pages_label} {pp_raw}."
     else:
         apa += f"{title}."
+        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
         if loc and pub:
             apa += f" {loc}: {pub}."
         elif pub:
             apa += f" {pub}."
-        elif loc:
-            apa += f" {loc}."
-        if pp:
-            apa += f" {pp}."
-        if link:
-            apa += f" {link}"
-        note = entry.get("note") or entry.get("annotate")
-        if note:
-            apa += f" [{safe_latex_to_text(note).strip()}]"
+        if pp_raw:
+            apa += f" {pages_label} {pp_raw}."
 
-    # Lägg till länk och note sist om de inte redan lagts till
-    if et not in ("misc", ""):
-        if link:
-            apa += f" {link}"
-        note = entry.get("note") or entry.get("annotate")
-        if note:
-            apa += f" [{safe_latex_to_text(note).strip()}]"
+    # Länk och note sist (gemensamt för alla icke-thesis-typer)
+    if link:
+        apa += f" {link}"
+    elif urldate and url:
+        # Webresurs utan DOI — visa hämtningsdatum
+        if LANGUAGE == "sv":
+            apa += f" Hämtad {urldate} från {url}"
+        else:
+            apa += f" Retrieved {urldate}, from {url}"
+    note = entry.get("note") or entry.get("annotate")
+    if note:
+        apa += f" [{safe_latex_to_text(note).strip()}]"
 
     apa = " ".join(apa.split())
     return apa
@@ -774,7 +832,7 @@ def build_standard_reference_short(entry):
     authors= parse_authors_for_compact(entry,semicolon=False)
     y= parse_year_4chars(entry)
     if y=="????":
-        y="n.d."
+        y= "u.å." if LANGUAGE == "sv" else "n.d."
 
     t= safe_latex_to_text(entry.get("title","Untitled")).strip()
     if t: t= t[0].upper()+ t[1:]
@@ -790,7 +848,7 @@ def build_standard_reference_short(entry):
     elif et in ("phdthesis", "mastersthesis", "thesis"):
         inst = safe_latex_to_text(entry.get("institution", "") or entry.get("school", "") or entry.get("publisher", "")).strip()
         if et == "phdthesis":
-            label = "Diss." if LANGUAGE == "sv" else "PhD Thesis"
+            label = "Avh." if LANGUAGE == "sv" else "PhD Thesis"
         elif et == "mastersthesis":
             label = "Examensarb." if LANGUAGE == "sv" else "Master's Thesis"
         else:
