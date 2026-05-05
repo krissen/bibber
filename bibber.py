@@ -1951,6 +1951,16 @@ if __name__ == "__main__":
     if bib_file:
         load_bibtex(bib_file, verbose=VERBOSE_MODE)
 
+    # Auto-fallback: utan TTY skulle prompt_toolkit-TUI:n crasha i asyncio.run.
+    if not sys.stdout.isatty() and not args.key and not args.one and args.num is None:
+        if LANGUAGE == "sv":
+            print("Icke-TTY detekterad; använder -n5. Ange -1 eller -n N för att tysta.",
+                  file=sys.stderr)
+        else:
+            print("Non-TTY detected; using -n5. Pass -1 or -n N to silence.",
+                  file=sys.stderr)
+        args.num = 5
+
     # Icke-interaktivt läge: -k (key lookup)
     if args.key:
         if not bib_data:
