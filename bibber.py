@@ -835,8 +835,10 @@ def build_standard_reference_short(entry):
         y= "u.å." if LANGUAGE == "sv" else "n.d."
 
     t= safe_latex_to_text(entry.get("title","Untitled")).strip()
-    if t: t= t[0].upper()+ t[1:]
-    else: t="Untitled"
+    if t:
+        t= t[0].upper()+ t[1:]
+    else:
+        t="Untitled"
 
     et= entry.get("entrytype","").lower()
     if et=="article":
