@@ -298,7 +298,7 @@ def load_bibtex(file_path, verbose=None):
             # Logga eventuella parsningsfel
             if library.failed_blocks:
                 for block in library.failed_blocks:
-                    print(f"Varning: Parsningsfel", file=sys.stderr)
+                    print("Varning: Parsningsfel", file=sys.stderr)
 
             # Bygg och cacha sökindex
             search_index = _build_search_index(bib_data)
