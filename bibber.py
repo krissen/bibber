@@ -1,5 +1,4 @@
 #!/Users/krisniem/.local/share/miniforge3/envs/default/bin/python
-# coding=utf-8
 import argparse
 import collections
 import collections.abc
@@ -37,10 +36,16 @@ def _ensure_interactive_imports():
     from prompt_toolkit.history import FileHistory as _FileHistory
     from prompt_toolkit.key_binding import KeyBindings as _KeyBindings
     from prompt_toolkit.layout import Layout as _Layout
-    from prompt_toolkit.layout.containers import Float as _Float, FloatContainer as _FloatContainer, Window as _Window
-    from prompt_toolkit.layout.controls import FormattedTextControl as _FormattedTextControl
+    from prompt_toolkit.layout.containers import Float as _Float
+    from prompt_toolkit.layout.containers import FloatContainer as _FloatContainer
+    from prompt_toolkit.layout.containers import Window as _Window
+    from prompt_toolkit.layout.controls import (
+        FormattedTextControl as _FormattedTextControl,
+    )
     from prompt_toolkit.layout.margins import ScrollbarMargin as _ScrollbarMargin
-    from prompt_toolkit.widgets import Dialog as _Dialog, Frame as _Frame, TextArea as _TextArea
+    from prompt_toolkit.widgets import Dialog as _Dialog
+    from prompt_toolkit.widgets import Frame as _Frame
+    from prompt_toolkit.widgets import TextArea as _TextArea
 
     PromptSession = _PromptSession
     Application = _Application
@@ -164,7 +169,7 @@ def get_last_used_file():
             with open(last_used, "r") as f:
                 data=json.load(f)
                 return data.get("last_used")
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             pass
     return None
 
@@ -182,7 +187,7 @@ def load_from_cache(cache_file):
             if isinstance(cached, dict) and cached.get("version") == CACHE_VERSION:
                 return cached["entries"], cached.get("search_index")
             return None, None  # Gammal cache-version
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return None, None
 
 
@@ -227,7 +232,7 @@ def load_language_setting():
                 data=json.load(f)
                 if "language" in data:
                     LANGUAGE=data["language"]
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             pass
 
 def save_language_setting(lang):
@@ -1910,7 +1915,6 @@ def show_popup(title_text, body_text):
     LÄMNAD tom ifall du använde denna för nåt annat. 
     Men du kan ta bort helt om du vill.
     """
-    pass
 
 # -------------------------------------------------
 # 9) main
