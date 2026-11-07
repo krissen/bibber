@@ -5,6 +5,7 @@ import collections.abc
 import hashlib
 import json
 import os
+import re
 import sys
 
 import bibtexparser
@@ -66,22 +67,59 @@ def _ensure_interactive_imports():
     _interactive_imports_done = True
 
 
-def resolve_crossrefs_v2(library):
-    """Resolver crossref-fält för bibtexparser v2."""
-    entries_by_key = {e.key: e for e in library.entries}
+# biblatex-arv vid crossref: förälderns titelfält blir barnets boktitelfält,
+# och fält som identifierar själva föräldern (DOI, ISBN, fil, sammanfattning)
+# ärvs inte, eftersom kapitlet annars får bokens DOI som egen länk.
+CROSSREF_TITLE_MAP = {
+    "title": "booktitle",
+    "subtitle": "booksubtitle",
+    "titleaddon": "booktitleaddon",
+}
+CROSSREF_CONTAINED_TYPES = {
+    "incollection", "inbook", "inproceedings", "bookinbook",
+    "suppbook", "suppcollection", "inreference",
+}
+CROSSREF_SKIP = {
+    "crossref", "xref", "ids", "entrytype", "shorttitle", "shorthand",
+    "doi", "isbn", "url", "urldate", "file", "abstract", "keywords",
+    "pagetotal", "owner", "timestamp", "modificationdate", "date-added",
+    "date-modified", "creationdate", "label", "sortkey",
+}
 
-    for entry in library.entries:
-        crossref_field = entry.fields_dict.get("crossref")
-        if crossref_field:
-            ref_key = crossref_field.value.strip("{}")
-            ref_entry = entries_by_key.get(ref_key)
-            if ref_entry:
-                for field_key, field in ref_entry.fields_dict.items():
-                    if field_key not in entry.fields_dict and field_key != "crossref":
-                        entry.set_field(bibtexparser.model.Field(
-                            key=field_key, value=field.value
-                        ))
-    return library
+
+def resolve_crossrefs_dict(entries):
+    """Löser crossref på dict-nivå (efter sammanslagning av flera .bib-filer).
+
+    Barnets egna fält vinner alltid. Uppslag av förälderns nyckel är
+    skiftlägesokänsligt, som i biber.
+    """
+    by_lower = {k.lower(): v for k, v in entries.items()}
+    for entry in entries.values():
+        ref = entry.get("crossref", "").strip("{} ")
+        parent = by_lower.get(ref.lower()) if ref else None
+        if not parent:
+            continue
+        # Titelflytten gäller bara delar av en samlingsvolym (som i biblatex);
+        # en bok som crossrefar en annan bok ärver titeln som vanligt.
+        contained = entry.get("entrytype", "").lower() in CROSSREF_CONTAINED_TYPES
+        if contained:
+            for src, dst in CROSSREF_TITLE_MAP.items():
+                val = parent.get(src)
+                if val and not entry.get(dst):
+                    entry[dst] = val
+        # year och date är ett par: har barnet det ena ärvs inget av dem,
+        # annars skuggar förälderns year barnets date.
+        own_date = bool(entry.get("year") or entry.get("date"))
+        for fkey, val in parent.items():
+            if fkey in CROSSREF_SKIP or (contained and fkey in CROSSREF_TITLE_MAP):
+                continue
+            if own_date and fkey in ("year", "date"):
+                continue
+            if fkey.startswith("bdsk-"):
+                continue
+            if val and not entry.get(fkey):
+                entry[fkey] = val
+    return entries
 
 
 def library_to_dict(library):
@@ -100,7 +138,7 @@ def library_to_dict(library):
 # -------------------------------------------------
 collections.Iterable = collections.abc.Iterable
 
-CACHE_DIR = os.path.expanduser("~/.cache/bibber/")
+CACHE_DIR = os.path.expanduser(os.environ.get("BIBBER_CACHE_DIR", "~/.cache/bibber/"))
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 HISTORY_FILE = os.path.join(CACHE_DIR, "history.txt")
@@ -118,7 +156,7 @@ text_area = None
 
 LANGUAGE = "en"
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
-CACHE_VERSION = "3"  # Bump vid ändringar i cache-format (3: sökindex)
+CACHE_VERSION = "4"  # Bump vid ändringar i cache-format (3: sökindex, 4: crossref-arv)
 
 # -------------------------------------------------
 # Argument-parsning
@@ -142,7 +180,15 @@ Interaktiva kommandon:
     parser.add_argument("query", nargs="*", help="Söktermer")
     parser.add_argument("-f", "--format", choices=["apa", "bib"], default="apa",
                         help="Outputformat (default: apa)")
-    parser.add_argument("-k", "--key", help="Hämta specifik citation key direkt")
+    parser.add_argument("-k", "--key", nargs="+", metavar="KEY",
+                        help="Hämta en eller flera citation keys direkt; en referens "
+                             "per stycke i given ordning")
+    parser.add_argument("--keys", metavar="FIL",
+                        help="Fil med en citation key per rad (tomma rader och "
+                             "#-kommentarer hoppas över); '-' läser stdin")
+    parser.add_argument("--lang", choices=["sv", "en"],
+                        help="Språk för den här körningen (sparas inte; "
+                             "interaktiva 'lang' sparar)")
     parser.add_argument("-1", "--one", action="store_true",
                         help="Icke-interaktivt: ge första träffen och avsluta (genväg för -n1)")
     parser.add_argument("-n", "--num", type=int, metavar="N",
@@ -151,13 +197,18 @@ Interaktiva kommandon:
                         help="Visa extra information (t.ex. 'Laddar fil...')")
     parser.add_argument("-d", "--debug", action="store_true",
                         help="Debug-läge")
-    parser.add_argument("-b", "--bibfile", help=".bib-fil att ladda")
+    parser.add_argument("-b", "--bibfile", action="append", metavar="FIL",
+                        help=".bib-fil att ladda; upprepa för flera. Vid samma "
+                             "nyckel vinner den fil som anges först")
     return parser.parse_args()
 
 # -------------------------------------------------
 # 1) Fil & hjälp
 # -------------------------------------------------
 def save_last_used_file(file_path):
+    """Sparar senast använda fil(er); en lista när flera -b angavs."""
+    if isinstance(file_path, (list, tuple)) and len(file_path) == 1:
+        file_path = file_path[0]
     last_used = os.path.join(CACHE_DIR, "last_used_bibfile.json")
     with open(last_used, "w") as f:
         json.dump({"last_used": file_path}, f)
@@ -257,20 +308,35 @@ def _build_search_index(entries):
     return search_index
 
 
-def load_bibtex(file_path, verbose=None):
+def load_bibtex(file_paths, verbose=None):
     """
-    Laddar BibTeX-fil.
+    Laddar en eller flera BibTeX-filer.
 
     Args:
-        file_path: Sökväg till .bib-fil
+        file_paths: Sökväg eller lista av sökvägar. Vid samma nyckel i flera
+            filer vinner den fil som kommer FÖRST, så en lokal fil med
+            anpassade poster läggs före den gemensamma (-b lokal.bib -b kallor.bib).
+            Crossref löses över alla filer efter sammanslagningen.
         verbose: Om True, visa laddningsmeddelanden. Om None, använd VERBOSE_MODE.
     """
     global bib_data, processed_entries_cache
     if verbose is None:
         verbose = VERBOSE_MODE
 
-    file_path = os.path.expanduser(file_path)
-    cfile = os.path.join(CACHE_DIR, md5sum(file_path) + ".json")
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+    file_paths = [os.path.expanduser(f) for f in file_paths]
+    try:
+        digests = [md5sum(f) for f in file_paths]
+    except FileNotFoundError as e:
+        print(f"Error loading bib: {e}", file=sys.stderr)
+        return
+    if len(digests) == 1:
+        cache_id = digests[0]
+    else:
+        cache_id = hashlib.md5("|".join(digests).encode()).hexdigest()
+    cfile = os.path.join(CACHE_DIR, cache_id + ".json")
+    shown = ", ".join(file_paths)
 
     cached_entries, cached_index = load_from_cache(cfile)
     if cached_entries:
@@ -284,33 +350,37 @@ def load_bibtex(file_path, verbose=None):
             processed_entries_cache = None
         if verbose:
             if LANGUAGE == "sv":
-                print(f"Laddar senast använda fil: {file_path}", file=sys.stderr)
+                print(f"Laddar senast använda fil: {shown}", file=sys.stderr)
             else:
-                print(f"Loading last used file: {file_path}", file=sys.stderr)
-        save_last_used_file(file_path)
+                print(f"Loading last used file: {shown}", file=sys.stderr)
+        save_last_used_file(file_paths)
     else:
         try:
-            if verbose:
-                if LANGUAGE == "sv":
-                    print(f"Laddar fil: {file_path}", file=sys.stderr)
-                else:
-                    print(f"Loading file: {file_path}", file=sys.stderr)
-
-            library = bibtexparser.parse_file(file_path)
-            library = resolve_crossrefs_v2(library)
-            bib_data = library_to_dict(library)
-
-            # Logga eventuella parsningsfel
-            if library.failed_blocks:
-                for block in library.failed_blocks:
-                    print("Varning: Parsningsfel", file=sys.stderr)
+            merged = {}
+            seen_lower = set()
+            for file_path in file_paths:
+                if verbose:
+                    if LANGUAGE == "sv":
+                        print(f"Laddar fil: {file_path}", file=sys.stderr)
+                    else:
+                        print(f"Loading file: {file_path}", file=sys.stderr)
+                library = bibtexparser.parse_file(file_path)
+                if library.failed_blocks:
+                    print(f"Varning: {len(library.failed_blocks)} parsningsfel i {file_path}",
+                          file=sys.stderr)
+                for key, entry in library_to_dict(library).items():
+                    if key.lower() in seen_lower:
+                        continue  # tidigare fil vinner
+                    seen_lower.add(key.lower())
+                    merged[key] = entry
+            bib_data = resolve_crossrefs_dict(merged)
 
             # Bygg och cacha sökindex
             search_index = _build_search_index(bib_data)
             processed_entries_cache = [(i, s) for i, s in enumerate(search_index)]
 
             save_to_cache(bib_data, cfile, search_index)
-            save_last_used_file(file_path)
+            save_last_used_file(file_paths)
         except Exception as e:
             print(f"Error loading bib: {e}", file=sys.stderr)
             return
@@ -318,396 +388,357 @@ def load_bibtex(file_path, verbose=None):
 # -------------------------------------------------
 # 4) En förenklad APA, tar hänsyn till LANGUAGE
 # -------------------------------------------------
-def build_editors_string(raw_editor_string, language="en"):
-    """
-    Tar en 'raw_editor_string' (ofta något i stil med 'Last, First and Doe, John ...')
-    och returnerar en sträng i APA-lik form:
-    
-      "Last, F. & Doe, J. (Eds.)"   (om engelska och flera editorer)
-      "Last, F. (Ed.)"             (om engelska och en editor)
-    
-    eller om LANGUAGE="sv":
-      "Last, F. & Doe, J. (red.)"  (vanligast på svenska)
-    
-    Hanterar även fler än 20 redaktörer enligt APA7 (för referenslistor):
-      - De första 19 namnen
-      - "..."
-      - Sista namnet
-    """
-    if not raw_editor_string:
-        return "Unknown Editor"
+# Språkberoende etiketter för APA 7. Svenska följer de svenska
+# APA-anvisningarna (I, Red., s., uppl., u.å.).
+APA_LABELS = {
+    "sv": {
+        "no_date": "u.å.", "ed1": "Red.", "edn": "Red.", "in": "I",
+        "page": "s.", "pages": "s.", "edition": "uppl.",
+        "phd": "Doktorsavhandling", "lic": "Licentiatuppsats",
+        "master": "Masteruppsats", "thesis": "Examensarbete",
+        "retrieved": "Hämtad {date} från {url}",
+    },
+    "en": {
+        "no_date": "n.d.", "ed1": "Ed.", "edn": "Eds.", "in": "In",
+        "page": "p.", "pages": "pp.", "edition": "ed.",
+        "phd": "Doctoral dissertation", "lic": "Licentiate thesis",
+        "master": "Master's thesis", "thesis": "Thesis",
+        "retrieved": "Retrieved {date}, from {url}",
+    },
+}
 
-    # Splitta på ' and ' enligt BibTeX-konvention
-    splitted_editors = raw_editor_string.split(" and ")
+# biblatex-typnycklar i fältet `type` och vilken etikett de motsvarar.
+THESIS_TYPE_KEYS = {
+    "phdthesis": "phd", "phd": "phd", "doctoral": "phd",
+    "licentiatethesis": "lic", "licthesis": "lic",
+    "mathesis": "master", "mastersthesis": "master", "masterthesis": "master",
+}
 
-    # Hjälpfunktion för att parsa "Efternamn, Förnamn" => "Efternamn, F."
-    def parse_one(raw_name):
-        name_clean = safe_latex_to_text(raw_name.strip())
-        parts = name_clean.split(",")
+
+def _labels():
+    return APA_LABELS.get(LANGUAGE, APA_LABELS["en"])
+
+
+def _cap_after_colon(text):
+    """APA: versal på första bokstaven efter kolon i titel. Inget annat ändras."""
+    return re.sub(r":(\s+)(\W*)(\w)",
+                  lambda m: f":{m.group(1)}{m.group(2)}{m.group(3).upper()}", text)
+
+
+def _join_title(main, sub):
+    """Huvudtitel + undertitel med kolon, första bokstaven versal."""
+    main = safe_latex_to_text(main or "").strip()
+    sub = safe_latex_to_text(sub or "").strip()
+    if sub:
+        sub = sub[0].upper() + sub[1:]
+        if not main:
+            main = sub
+        elif main.rstrip()[-1] in "?!":
+            # APA: en titel som slutar på ? eller ! får inget kolon
+            main = f"{main.rstrip()} {sub}"
+        else:
+            main = f"{main.rstrip(' :')}: {sub}"
+    if main:
+        main = main[0].upper() + main[1:]
+    return _cap_after_colon(main)
+
+
+def _pages(raw):
+    """Sidintervall med tankstreck (APA): 75-93 och 75--93 blir 75–93."""
+    pp = (raw or "").replace("---", "–").replace("--", "–").strip()
+    pp = re.sub(r"(?<=\w)\s*-\s*(?=\w)", "–", pp)
+    return pp
+
+
+def _page_label(pp):
+    lab = _labels()
+    if re.search(r"[–,]", pp):
+        return lab["pages"]
+    return lab["page"]
+
+
+def _edition(raw):
+    """'2' → '2 uppl.' / '2nd ed.'; fritext lämnas som den är."""
+    raw = safe_latex_to_text(raw or "").strip()
+    if not raw:
+        return ""
+    lab = _labels()
+    if raw.isdigit():
+        if LANGUAGE == "sv":
+            return f"{raw} {lab['edition']}"
+        n = int(raw)
+        suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{n}{suffix} {lab['edition']}"
+    if re.search(r"(uppl|ed)\.?$", raw, re.IGNORECASE):
+        return raw
+    return f"{raw} {lab['edition']}"
+
+
+def _tidy(text):
+    """Städar skiljetecken i referenskroppen (inte i länken).
+
+    - En titel som slutar på ? eller ! får ingen extra punkt, även genom kursiv:
+      'religion?.' och '*religion?*.' blir 'religion?' och '*religion?*'.
+    - Dubbla punkter slås ihop ('etc..' blir 'etc.'), men en ellips ('...')
+      i författarlistan lämnas orörd.
+    """
+    text = " ".join(text.split())
+    text = re.sub(r"([?!])(\*?)\.", r"\1\2", text)
+    text = re.sub(r"(?<!\.)\.(\*?)\.(?!\.)", r".\1", text)
+    return text
+
+
+def _person_list(raw, given_first=False):
+    """BibTeX-namnlista → APA-namn. Över 20 namn: 19, '...', sista."""
+    names = []
+    for a in safe_latex_to_text(raw).split(" and "):
+        a = a.strip()
+        if not a:
+            continue
+        parts = a.split(",")
         if len(parts) == 2:
             ln = parts[0].strip()
-            fn_parts = parts[1].split()
-            initials = [f"{p[0].upper()}." for p in fn_parts if p]
-            init_str = " ".join(initials)
+            initials = []
+            for given in parts[1].split():
+                # Bindestreckat förnamn: Hans-Günter → H.-G.
+                sub = [g for g in given.split("-") if g]
+                initials.append("-".join(f"{g[0].upper()}." for g in sub))
+            init_str = " ".join(i for i in initials if i)
             if init_str:
-                return f"{ln}, {init_str}"
+                names.append(f"{init_str} {ln}" if given_first else f"{ln}, {init_str}")
             else:
-                return ln
+                names.append(ln)
         else:
-            # fallback om formateringen inte är "Efternamn, Förnamn"
-            return name_clean
-
-    # Bygg en lista av parsade redaktörer
-    editors_parsed = [parse_one(ed) for ed in splitted_editors if ed.strip()]
-
-    # APA7: Om fler än 20 => visa de första 19, sedan '...', sedan sista
-    if len(editors_parsed) > 20:
-        editors_parsed = editors_parsed[:19] + ["..."] + [editors_parsed[-1]]
-
-    # Sätt samman till en kommaseparerad sträng,
-    # men ersätt sista kommatecknet med "&" (en enkel variant).
-    if len(editors_parsed) > 1:
-        *all_but_last, last = editors_parsed
-        editors_str = ", ".join(all_but_last) + " & " + last
-    else:
-        editors_str = editors_parsed[0] if editors_parsed else "Unknown"
-
-    # Lägg till "(Ed.)"/"(Eds.)" eller "(red.)" beroende på språk + antal
-    if language.lower() == "en":
-        if len(splitted_editors) == 1:
-            editors_str += " (Ed.)"
-        else:
-            editors_str += " (Eds.)"
-    else:
-        # På svenska kan man välja "(red.)" både för singular och plural
-        editors_str += " (red.)"
-
-    return editors_str
+            names.append(a)
+    if len(names) > 20:
+        names = names[:19] + ["..."] + [names[-1]]
+    return names
 
 
-def build_editors_string_given_first(raw_editor_string, language="en"):
-    """
-    APA 7 incollection-format: redaktörer skrivs förnamn-först.
-      "F. Last & J. Doe (Eds.)"   (engelska, flera)
-      "F. Last (Ed.)"             (engelska, en)
-      "F. Last & J. Doe (red.)"   (svenska)
-    """
-    if not raw_editor_string:
-        return "Unknown Editor"
+def _join_names(names, given_first=False):
+    """APA 7: 'A, B., & C, D.' (komma före & även vid två namn i
+    efternamn-först-form); förnamn-först (kapitelredaktörer): 'A. B & C. D'
+    vid två, 'A, B, & C' vid fler. En ellips ersätter &."""
+    if not names:
+        return "Unknown"
+    if len(names) == 1:
+        return names[0]
+    if names[-2] == "...":
+        return ", ".join(names[:-1]) + " " + names[-1]
+    if given_first and len(names) == 2:
+        return f"{names[0]} & {names[1]}"
+    return ", ".join(names[:-1]) + ", & " + names[-1]
 
-    splitted_editors = raw_editor_string.split(" and ")
 
-    def parse_one_given_first(raw_name):
-        name_clean = safe_latex_to_text(raw_name.strip())
-        parts = name_clean.split(",")
-        if len(parts) == 2:
-            ln = parts[0].strip()
-            fn_parts = parts[1].split()
-            initials = [f"{p[0].upper()}." for p in fn_parts if p]
-            init_str = " ".join(initials)
-            if init_str:
-                return f"{init_str} {ln}"
-            else:
-                return ln
-        else:
-            return name_clean
+def _thesis_label(entry, et):
+    lab = _labels()
+    typ = safe_latex_to_text(entry.get("type", "")).strip()
+    if typ:
+        key = THESIS_TYPE_KEYS.get(typ.lower().replace(" ", "").replace("'", ""))
+        return lab[key] if key else typ[0].upper() + typ[1:]
+    if et == "phdthesis":
+        return lab["phd"]
+    if et == "mastersthesis":
+        return lab["master"]
+    return lab["thesis"] if et == "thesis" else ""
 
-    editors_parsed = [parse_one_given_first(ed) for ed in splitted_editors if ed.strip()]
 
-    if len(editors_parsed) > 20:
-        editors_parsed = editors_parsed[:19] + ["..."] + [editors_parsed[-1]]
+def _thesis_institution(entry):
+    """APA 7: lärosätet en gång. Fältet som ser ut som ett lärosäte vinner,
+    annars institution före school före publisher."""
+    cands = [safe_latex_to_text(entry.get(f, "")).strip()
+             for f in ("institution", "school", "publisher")]
+    cands = [c for c in cands if c]
+    if not cands:
+        return ""
+    uni = re.compile(r"universit|högskola|hogskola|college|institute of technology|academy",
+                     re.IGNORECASE)
+    unit = re.compile(r"(fakultet|institution|department|faculty|school of|division|"
+                      r"avdelning|enhet|centre|center|the study|studies)", re.IGNORECASE)
 
-    if len(editors_parsed) > 1:
-        *all_but_last, last = editors_parsed
-        editors_str = ", ".join(all_but_last) + " & " + last
-    else:
-        editors_str = editors_parsed[0] if editors_parsed else "Unknown"
+    def is_place(seg):
+        # Campus/ort efter kommat ("University of California, Berkeley"):
+        # kort och bara versala ord. En enhet som "The Study of Religions" eller
+        # "Pedagogiskt arbete" har gemena ord och släpps.
+        words = seg.split()
+        return (0 < len(words) <= 3 and not unit.search(seg)
+                and all(w[0].isupper() for w in words))
 
-    if language.lower() == "en":
-        if len(splitted_editors) == 1:
-            editors_str += " (Ed.)"
-        else:
-            editors_str += " (Eds.)"
-    else:
-        editors_str += " (red.)"
-
-    return editors_str
+    for c in cands:
+        # Ett fält kan bära "Lärosäte, Enhet"; ta lärosätet och en ev. ort,
+        # inte enheten. "Fakulteten för …" är en enhet, inte lärosätet.
+        segs = [x.strip() for x in c.split(",") if x.strip()]
+        for i, seg in enumerate(segs):
+            if uni.search(seg) and not unit.match(seg):
+                kept = [seg]
+                for nxt in segs[i + 1:]:
+                    if not is_place(nxt):
+                        break
+                    kept.append(nxt)
+                return ", ".join(kept)
+    return cands[0]
 
 
 def generate_apa(entry):
     """
-    APA 7-formatering.
-      - Flera författare eller redaktörer (upp till 20 innan '...').
-      - @book där 'editor' används om 'author' saknas.
-      - Svenska/engelska skillnader i u.å. / n.d., (red.) / (Ed.), etc.
-      - Tidskriftsartiklar: *Tidskrift*, *volym*(nummer), sidor.
-      - Avhandlingar: *Titel* [Doktorsavhandling, Lärosäte].
-      - Incollection: redaktörer i förnamnsordning (F. Efternamn).
-      - För @misc: visar DOI om det finns, annars URL, samt note/annotate sist inom hakparentes.
+    APA 7-formatering (svenska eller engelska efter LANGUAGE).
+      - Upp till 20 författare/redaktörer, därefter '...' och sista namnet.
+      - @book med 'editor' när 'author' saknas: 'Efternamn, F. (Red.).'
+      - title + subtitle med kolon och versal efter kolon.
+      - Tidskrift: *Tidskrift*, *volym*(nummer), sidor. Utan volym: *Tidskrift*, (nummer).
+      - Kapitel: I F. Efternamn (Red.), *Bok* (uppl., s. x–y). Förlag.
+      - Avhandling: *Titel* [Doktorsavhandling, Lärosäte]. Fältet `type` styr etiketten.
+      - Utgivningsort utelämnas (APA 7).
+      - DOI som https://doi.org/…, annars URL, sist.
     """
     if DEBUG_MODE:
         for key, val in entry.items():
             print(f"[DEBUG] {key} : {val}")
+    lab = _labels()
 
-    if LANGUAGE == "sv":
-        no_date       = "u.å."
-        single_ed     = " (red.)"
-        plural_ed     = " (red.)"
-        pages_label   = "ss."
-        in_b          = "I"
-    else:
-        no_date       = "n.d."
-        single_ed     = " (Ed.)"
-        plural_ed     = " (Eds.)"
-        pages_label   = "pp."
-        in_b          = "In"
-
-    # 1) Hämta antingen 'author' eller 'editor' om 'author' saknas
+    # 1) Författare, eller redaktörer om författare saknas
     raw_author = entry.get("author", "") or entry.get("editor", "")
-    if DEBUG_MODE:
-        print(f"[DEBUG] raw_author={raw_author}")
-    is_editor = False
-    if raw_author and not entry.get("author", "") and entry.get("editor", ""):
-        is_editor = True
-    if not raw_author:
-        raw_author = "Unknown"
-
-    # 2) Författar-/redaktörslistan
-    auth_ltx = safe_latex_to_text(raw_author)
-    splitted = [a.strip() for a in auth_ltx.split(" and ")]
-    authors = []
-    for a in splitted:
-        parts = a.split(",")
-        if len(parts) == 2:
-            ln = parts[0].strip()
-            fn_parts = parts[1].split()
-            initials = []
-            for ffn in fn_parts:
-                if ffn:
-                    initials.append(ffn[0].upper() + ".")
-            init_str = " ".join(initials)
-            if init_str:
-                authors.append(f"{ln}, {init_str}")
-            else:
-                authors.append(ln)
-        else:
-            authors.append(a.strip())
-    if len(authors) > 20:
-        first_19 = authors[:19]
-        last_one = authors[-1]
-        authors = first_19 + ["..."] + [last_one]
+    is_editor = bool(raw_author and not entry.get("author") and entry.get("editor"))
+    names = _person_list(raw_author) if raw_author else ["Unknown"]
+    authors_str = _join_names(names)
     if is_editor:
-        if len(splitted) == 1:
-            authors[-1] += single_ed
-        else:
-            authors[-1] += plural_ed
-    if len(authors) > 1:
-        authors_str = ", ".join(authors[:-1]) + " & " + authors[-1]
-    else:
-        authors_str = authors[0]
+        n_ed = len([a for a in raw_author.split(" and ") if a.strip()])
+        authors_str += f" ({lab['ed1'] if n_ed == 1 else lab['edn']})"
+    if not authors_str.endswith("."):
+        # APA: punkt efter författarledet även för organisationer ("Skolverket.")
+        authors_str += "."
 
-    # 3) År
-    yr = entry.get("year", "")
-    if not yr:
-        dt = entry.get("date", "")
-        if dt:
-            yr = dt[:4]
-    if not yr:
-        yr = no_date
+    # 2) År
+    yr = entry.get("year", "") or entry.get("date", "")[:4] or lab["no_date"]
 
-    # 4) Titel – artikeltitel, boktitel, etc.
-    title_raw = entry.get("title", "Untitled")
-    title = safe_latex_to_text(title_raw).strip()
-    if title:
-        title = title[0].upper() + title[1:]
-    else:
-        title = "Untitled"
+    # 3) Titel
+    title = _join_title(entry.get("title", ""), entry.get("subtitle", "")) or "Untitled"
 
-    # 5) Sidor (raw utan prefix — prefix läggs till per entrytype)
-    pp_raw = entry.get("pages", "").replace("--", "–").strip()
-
-    # 6) DOI/URL
-    doi = entry.get("doi", "")
-    url = entry.get("url", "")
-    if doi:
-        if not doi.startswith("https://doi.org/"):
-            doi = "https://doi.org/" + doi
-        link = doi
-    elif url:
-        link = url
-    else:
-        link = ""
-
-    # 7) Plats / förlag
-    loc = safe_latex_to_text(entry.get("location", "")).strip()
+    pp = _pages(entry.get("pages", ""))
+    edition = _edition(entry.get("edition", ""))
     pub = safe_latex_to_text(entry.get("publisher", "")).strip()
 
-    # 8) Entrytype
-    et = entry.get("entrytype", "").lower()
-
-    apa = f"{authors_str} ({yr}). "
-
-    # 9) Upplaga
-    edition_raw = safe_latex_to_text(entry.get("edition", "")).strip()
-    if edition_raw:
-        if LANGUAGE == "sv":
-            edition_str = f"({edition_raw} uppl.)"
-        else:
-            edition_str = f"({edition_raw} ed.)"
+    # 4) Länk
+    doi = entry.get("doi", "").strip()
+    url = entry.get("url", "").strip()
+    if doi:
+        if not doi.startswith("http"):
+            doi = "https://doi.org/" + doi
+        link = doi
     else:
-        edition_str = ""
-
-    # 10) Hämtningsdatum för webresurser
+        link = url
     urldate = entry.get("urldate", "").strip()
 
-    # ========================
-    # Speciell hantering för thesis/avhandling/examensarbete
-    # ========================
+    et = entry.get("entrytype", "").lower()
+    body = f"{authors_str} ({yr}). "
+    note = entry.get("note") or entry.get("annotate")
+    note_str = f" [{safe_latex_to_text(note).strip()}]" if note else ""
+
+    # ===== Avhandlingar =====
+    # En @misc räknas som avhandling bara när fältet `type` ger en etikett;
+    # annars är det t.ex. en lärarhandledning med institution och förlag.
     thesis_types = ("phdthesis", "mastersthesis", "thesis")
-    if et in thesis_types or (et == "misc" and (entry.get("institution") or entry.get("school")) and not entry.get("journal") and not entry.get("journaltitle")):
-        # Bygg ordning institution, school, publisher, endast unika värden
-        inst = safe_latex_to_text(entry.get("institution", "")).strip()
-        school = safe_latex_to_text(entry.get("school", "")).strip()
-        pub_t = safe_latex_to_text(entry.get("publisher", "")).strip()
-        org_fields = [inst, school, pub_t]
-        seen = set()
-        orgs = []
-        for val in org_fields:
-            if val and val not in seen:
-                orgs.append(val)
-                seen.add(val)
-        # Bestäm typ av arbete (språkanpassat)
-        if et == "phdthesis":
-            thesis_label = "Doktorsavhandling" if LANGUAGE == "sv" else "Doctoral dissertation"
-        elif et == "mastersthesis":
-            thesis_label = "Examensarbete" if LANGUAGE == "sv" else "Master's thesis"
+    misc_thesis = (et == "misc" and bool(entry.get("institution") or entry.get("school"))
+                   and not entry.get("journal") and not entry.get("journaltitle")
+                   and bool(entry.get("type", "").strip()))
+    if et in thesis_types or misc_thesis:
+        label = _thesis_label(entry, et)
+        inst = _thesis_institution(entry)
+        bracket = ", ".join(x for x in (label, inst) if x)
+        if bracket:
+            body += f"*{title}* [{bracket}]."
         else:
-            thesis_label = entry.get("type", "").strip()
+            body += f"*{title}*."
+        out = _tidy(body + note_str)
+        return f"{out} {link}" if link else out
 
-        if thesis_label and orgs:
-            apa += f"*{title}* [{thesis_label}, {', '.join(orgs)}]."
-        elif thesis_label:
-            apa += f"*{title}* [{thesis_label}]."
-        elif orgs:
-            apa += f"*{title}*. {', '.join(orgs)}."
-        else:
-            apa += f"*{title}*."
-        # Lägg till eventuell note/annotate
-        note = entry.get("note") or entry.get("annotate")
-        if note:
-            apa += f" [{safe_latex_to_text(note).strip()}]"
-        # Länk sist om finns
-        if link:
-            apa += f" {link}"
-        apa = " ".join(apa.split())
-        return apa
-
-    # ============ Resten av typerna ============
-    if et == "incollection":
-        # Kapitel i redigerad bok – APA 7: redaktörer i förnamnsordning
-        chapter_title = title
+    if et in ("incollection", "inbook"):
         raw_ed = entry.get("editor", "")
-        bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
-        apa += f"{chapter_title}. "
+        bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
+        body += f"{title}. "
         if bk:
+            body += f"{lab['in']} "
             if raw_ed and raw_ed != raw_author:
-                editors_str = build_editors_string_given_first(raw_ed, LANGUAGE)
-                apa += f"{in_b} {editors_str}, *{bk}*"
-            else:
-                apa += f"{in_b} *{bk}*"
-            if edition_str:
-                apa += f" {edition_str}"
-            if pp_raw:
-                apa += f" ({pages_label} {pp_raw})"
-            apa += "."
-        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
-            apa += f" {pub}."
+                eds = _person_list(raw_ed, given_first=True)
+                n_ed = len([e for e in raw_ed.split(" and ") if e.strip()])
+                body += f"{_join_names(eds, given_first=True)} ({lab['ed1'] if n_ed == 1 else lab['edn']}), "
+            body += f"*{bk}*"
+            paren = [x for x in (edition, f"{_page_label(pp)} {pp}" if pp else "") if x]
+            if paren:
+                body += f" ({', '.join(paren)})"
+            body += "."
+        elif pp:
+            body += f"{_page_label(pp)} {pp}."
+        if pub:
+            body += f" {pub}."
     elif et == "article":
-        # APA 7: Titel. *Tidskrift*, *volym*(nummer), sidor.
-        apa += f"{title}. "
+        body += f"{title}. "
         j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
         vol = entry.get("volume", "").strip()
-        num = entry.get("number", "").strip()
+        num = entry.get("number", "").strip() or entry.get("issue", "").strip()
         if j:
-            apa += f"*{j}*"
+            body += f"*{j}*"
             if vol:
-                apa += f", *{vol}*"
-            if num:
-                apa += f"({num})"
-            if pp_raw:
-                apa += f", {pp_raw}"
-            apa += "."
-        elif pp_raw:
-            apa += f"{pp_raw}."
+                body += f", *{vol}*"
+                if num:
+                    body += f"({num})"
+            elif num:
+                body += f", ({num})"
+            if pp:
+                body += f", {pp}"
+            body += "."
+        elif pp:
+            body += f"{pp}."
     elif et == "book":
-        apa += f"*{title}*"
-        if edition_str:
-            apa += f" {edition_str}"
-        apa += "."
-        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
-            apa += f" {pub}."
+        body += f"*{title}*"
+        if edition:
+            body += f" ({edition})"
+        body += "."
+        if pub:
+            body += f" {pub}."
     elif et == "inproceedings":
-        bk = safe_latex_to_text(entry.get("booktitle", "")).strip()
+        bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
         howp = safe_latex_to_text(entry.get("howpublished", "")).strip()
-        apa += f"{title}."
+        body += f"{title}."
         if bk:
-            apa += f" {in_b} *{bk}*"
-            if pp_raw:
-                apa += f" ({pages_label} {pp_raw})"
-            apa += "."
+            body += f" {lab['in']} *{bk}*"
+            if pp:
+                body += f" ({_page_label(pp)} {pp})"
+            body += "."
         if howp:
-            apa += f" {howp}."
-        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
-            apa += f" {pub}."
-    elif et == "misc":
-        apa += f"*{title}*."
+            body += f" {howp}."
+        if pub:
+            body += f" {pub}."
+    elif et in ("misc", "online", "electronic", "www"):
+        body += f"*{title}*."
         inst = safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip()
         series = safe_latex_to_text(entry.get("series", "")).strip()
         if inst:
-            apa += f" {inst}."
+            body += f" {inst}."
         if series:
-            apa += f" {series}."
-        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
-            apa += f" {pub}."
-        if pp_raw:
-            apa += f" {pages_label} {pp_raw}."
+            body += f" {series}."
+        if pub and pub != inst:
+            body += f" {pub}."
+        if pp:
+            body += f" {_page_label(pp)} {pp}."
     else:
-        apa += f"{title}."
-        # OBS: Ort utelämnas i strikt APA 7, men vi inkluderar den medvetet.
-        if loc and pub:
-            apa += f" {loc}: {pub}."
-        elif pub:
-            apa += f" {pub}."
-        if pp_raw:
-            apa += f" {pages_label} {pp_raw}."
+        body += f"{title}."
+        if pub:
+            body += f" {pub}."
+        if pp:
+            body += f" {_page_label(pp)} {pp}."
 
-    # Länk och note sist (gemensamt för alla icke-thesis-typer)
+    # Anmärkning före länken: länken står alltid sist
+    body = _tidy(body + note_str)
     if link:
-        apa += f" {link}"
-    elif urldate and url:
-        # Webresurs utan DOI — visa hämtningsdatum
-        if LANGUAGE == "sv":
-            apa += f" Hämtad {urldate} från {url}"
-        else:
-            apa += f" Retrieved {urldate}, from {url}"
-    note = entry.get("note") or entry.get("annotate")
-    if note:
-        apa += f" [{safe_latex_to_text(note).strip()}]"
+        return _tidy_space(f"{body} {link}")
+    if urldate and url:
+        return _tidy_space(f"{body} " + lab["retrieved"].format(date=urldate, url=url))
+    return _tidy_space(body)
 
-    apa = " ".join(apa.split())
-    return apa
+
+def _tidy_space(text):
+    return " ".join(text.split())
 
 
 def generate_bib_entry(key, entry):
@@ -1464,7 +1495,6 @@ def render_lines_with_highlight(lines, selected_index):
 
 def _do_copy(index):
     """Kopiera referens från den aktuella listan."""
-    global last_shown_results, bib_data
 
     # Debug-info
     debug_log(f"Kopiering: Försöker kopiera index {index} från {len(last_shown_results)} resultat.")
@@ -1516,7 +1546,6 @@ Commands:
 
 def interactive_shell():
     _ensure_interactive_imports()
-    load_language_setting()
     session = PromptSession(history=FileHistory(HISTORY_FILE))
 
     while True:
@@ -1624,7 +1653,6 @@ def update_text_area_with_results(new_results):
     Uppdaterar 'body_window' (en Window med FormattedTextControl) med nya rader.
     Används ex. vid filtrering, så man bara visar de 'new_results'.
     """
-    global body_window
     if not body_window:
         return  # Om body_window inte är definierad, avbryt
 
@@ -1922,6 +1950,42 @@ def show_popup(title_text, body_text):
 if __name__ == "__main__":
     load_language_setting()
     args = parse_args()
+    if args.lang:
+        LANGUAGE = args.lang
+
+    # Samla nycklar från -k och --keys, i given ordning
+    keys = []
+    for k in args.key or []:
+        # -k tar flera värden och sväljer därför en efterföljande positionell
+        # .bib-fil (bibber -k KEY fil.bib); lägg den tillbaka bland query.
+        if k.lower().endswith(".bib") and os.path.isfile(os.path.expanduser(k)):
+            args.query.append(os.path.expanduser(k))
+        else:
+            keys.append(k)
+    if args.keys:
+        try:
+            if args.keys == "-":
+                key_lines = sys.stdin.read().splitlines()
+            else:
+                with open(os.path.expanduser(args.keys)) as kf:
+                    key_lines = kf.read().splitlines()
+            for line in key_lines:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    keys.extend(line.split())
+        except OSError as e:
+            if LANGUAGE == "sv":
+                print(f"Kan inte läsa nyckelfil: {e}", file=sys.stderr)
+            else:
+                print(f"Cannot read key file: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not keys:
+            if LANGUAGE == "sv":
+                print("Nyckelfilen innehöll inga nycklar.", file=sys.stderr)
+            else:
+                print("The key file contained no keys.", file=sys.stderr)
+            sys.exit(1)
+    args.key = keys or None
 
     # Sätt globala flaggor
     DEBUG_MODE = args.debug
@@ -1976,16 +2040,22 @@ if __name__ == "__main__":
                 print("No data loaded.", file=sys.stderr)
             sys.exit(1)
 
-        output = get_reference_by_key(args.key, args.format)
-        if output:
-            print(output)
-            sys.exit(0)
-        else:
-            if LANGUAGE == "sv":
-                print(f"Hittade ingen referens med key '{args.key}'.", file=sys.stderr)
+        outputs = []
+        missing = []
+        for k in args.key:
+            out = get_reference_by_key(k, args.format)
+            if out:
+                outputs.append(out)
             else:
-                print(f"No reference found with key '{args.key}'.", file=sys.stderr)
-            sys.exit(1)
+                missing.append(k)
+        if outputs:
+            print("\n\n".join(outputs))
+        for k in missing:
+            if LANGUAGE == "sv":
+                print(f"Hittade ingen referens med key '{k}'.", file=sys.stderr)
+            else:
+                print(f"No reference found with key '{k}'.", file=sys.stderr)
+        sys.exit(1 if missing else 0)
 
     # Icke-interaktivt läge: -1/--one eller -n N
     num_results = args.num if args.num else (1 if args.one else None)
