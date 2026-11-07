@@ -49,6 +49,43 @@ cat > "$TMP/main.bib" <<'EOF'
   doi = {10.1000/bok},
   year = {2007}
 }
+@book{Volym2026,
+  editor = {Aschim, Anders},
+  title = {Minorities, migration, and religion},
+  publisher = {Waxmann},
+  series = {Religious diversity and education in Europe},
+  edition = {3},
+  note = {Open access, CC BY-NC 4.0},
+  addendum = {Bokens tillägg},
+  isbn = {978-3-8188-0139-7},
+  rights = {CC BY-NC 4.0},
+  year = {2026}
+}
+@incollection{KapUtanNote,
+  author = {Schweitzer, Friedrich},
+  crossref = {Volym2026},
+  title = {Conclusions},
+  pages = {357-379}
+}
+@incollection{KapMedNote,
+  author = {Schweitzer, Friedrich},
+  crossref = {Volym2026},
+  title = {Introduction},
+  note = {Kapitlets egen anmärkning},
+  pages = {1-5}
+}
+@book{Mono1986,
+  author = {Hartman, Sven G.},
+  title = {Barns tankar om livet},
+  publisher = {Natur och Kultur},
+  note = {Bokens not},
+  year = {1986}
+}
+@inbook{Mono1986kap3,
+  crossref = {Mono1986},
+  title = {Livsfrågor},
+  pages = {40-60}
+}
 @incollection{Kap2007,
   author = {Fancourt, Nigel},
   crossref = {Bok2007},
@@ -214,6 +251,25 @@ lacks "ingen ort" "Münster" "$out"
 out="$(run --lang en -k Kap2007)"
 contains "kapitel en" "In C. Bakker & H.-G. Heimbrock (Eds.), *Researching RE teachers: RE teachers as researchers* (pp. 53–67). Waxmann." "$out"
 
+# --- Kapitel ärver inte bokens note/addendum/isbn, men väl år, redaktör, förlag, upplaga
+out="$(run --lang sv -k KapUtanNote)"
+check "kapitel utan egen note" \
+    "Schweitzer, F. (2026). Conclusions. I A. Aschim (Red.), *Minorities, migration, and religion* (3 uppl., s. 357–379). Waxmann." \
+    "$out"
+out="$(run --lang sv -k KapMedNote)"
+contains "kapitlets egen note" "[Kapitlets egen anmärkning]" "$out"
+lacks "inte bokens note" "Open access" "$out"
+out="$(run -f bib -k KapUtanNote)"
+lacks "isbn ärvs inte" "isbn" "$out"
+lacks "rights ärvs inte" "rights" "$out"
+contains "series ärvs" "series = {Religious diversity and education in Europe}" "$out"
+
+# --- @inbook i en monografi ärver bokens författare, inte dess not
+out="$(run --lang sv -k Mono1986kap3)"
+check "inbook ärver författare" \
+    "Hartman, S. G. (1986). Livsfrågor. I *Barns tankar om livet* (s. 40–60). Natur och Kultur." \
+    "$out"
+
 # --- crossref skiftlägesokänslig, upplaga i samma parentes som sidor
 out="$(run --lang sv -k Kap2011)"
 check "kapitel med upplaga" \
@@ -332,6 +388,25 @@ check "-k KEY fil.bib" "Skolverket. (2025). *Ämnesplan i religionskunskap*. Sko
 # --- Sökning -n1 ger APA-referens
 out="$(run --lang sv -n1 Toleransens altare)"
 contains "-n1 sökning" "*Toleransens altare* [Doktorsavhandling, Södertörn University]." "$out"
+
+# --- Cachen följer skriptet: en ändrad kopia av bibber.py läser inte den gamla cachen
+# (egen cachekatalog, så att gallringen inte påverkar räkningen)
+mkdir -p "$TMP/cache-script"
+cp "$BIBBER" "$TMP/bibber_copy.py"
+BIBBER_CACHE_DIR="$TMP/cache-script" "$TMP/bibber_copy.py" -b "$TMP/main.bib" -k Org2025 >/dev/null 2>&1
+printf '\n# ändrad\n' >> "$TMP/bibber_copy.py"
+BIBBER_CACHE_DIR="$TMP/cache-script" "$TMP/bibber_copy.py" -b "$TMP/main.bib" -k Org2025 >/dev/null 2>&1
+n="$(ls "$TMP/cache-script" | grep -cE '^[0-9a-f]{32}\.json$')"
+check "ny cache när skriptet ändras" "2" "$n"
+
+# --- Gallring: högst fem cachefiler, lang/last_used står kvar
+for i in 1 2 3 4 5 6 7; do
+    printf '@book{G%s, title = {T}, year = {2000}}\n' "$i" > "$TMP/g$i.bib"
+    "$BIBBER" -b "$TMP/g$i.bib" -k "G$i" >/dev/null 2>&1
+done
+n="$(ls "$BIBBER_CACHE_DIR" | grep -cE '^[0-9a-f]{32}\.json$')"
+check "cache gallras till fem" "5" "$n"
+check "last_used står kvar" "yes" "$([ -e "$BIBBER_CACHE_DIR/last_used_bibfile.json" ] && echo yes || echo no)"
 
 # --- --lang sparas inte
 check "--lang sparas inte" "no" "$([ -e "$BIBBER_CACHE_DIR/lang.json" ] && echo yes || echo no)"

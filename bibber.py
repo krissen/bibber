@@ -79,6 +79,17 @@ CROSSREF_CONTAINED_TYPES = {
     "incollection", "inbook", "inproceedings", "bookinbook",
     "suppbook", "suppcollection", "inreference",
 }
+# Det ett kapitel (eller annan del av en volym) ärver: bara det som behövs för
+# att beskriva volymen i kapitlets referens. Fält som beskriver själva boken
+# (note, annotate, addendum, isbn, rights …) ärvs inte; annars skrev
+# Schweitzer2026 ut förälderns "[Open access … Print-ISBN …]" som sin egen.
+# Upplaga ingår, eftersom APA anger den i kapitelreferensen, och author, så att
+# ett @inbook i en monografi får bokens författare (biblatex gör likadant).
+CROSSREF_CONTAINED_FIELDS = {
+    "author", "editor", "editortype", "bookauthor", "publisher", "organization",
+    "year", "date", "series", "volume", "edition", "booktitle",
+    "booksubtitle", "booktitleaddon", "location", "address", "language",
+}
 CROSSREF_SKIP = {
     "crossref", "xref", "ids", "entrytype", "shorttitle", "shorthand",
     "doi", "isbn", "url", "urldate", "file", "abstract", "keywords",
@@ -116,6 +127,8 @@ def resolve_crossrefs_dict(entries):
             if own_date and fkey in ("year", "date"):
                 continue
             if fkey.startswith("bdsk-"):
+                continue
+            if contained and fkey not in CROSSREF_CONTAINED_FIELDS:
                 continue
             if val and not entry.get(fkey):
                 entry[fkey] = val
@@ -156,6 +169,7 @@ text_area = None
 
 LANGUAGE = "en"
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
+CACHE_KEEP = 5  # antal cachefiler (bib-kombinationer/versioner) som sparas
 CACHE_VERSION = "4"  # Bump vid ändringar i cache-format (3: sökindex, 4: crossref-arv)
 
 # -------------------------------------------------
@@ -223,6 +237,33 @@ def get_last_used_file():
         except (OSError, json.JSONDecodeError):
             pass
     return None
+
+def _script_digest():
+    """md5 av bibber.py självt; tom sträng om filen inte går att läsa."""
+    try:
+        return md5sum(os.path.realpath(__file__))
+    except OSError:
+        return ""
+
+
+def _prune_cache(keep):
+    """Behåller de `keep` senast använda cachefilerna och tar bort resten.
+
+    Varje ändring av en .bib-fil eller av bibber.py ger en ny cachefil
+    (~2,5 MB för kallor.bib); utan gallring växte ~/.cache/bibber till
+    52 MB (2026-11-07). Bara filer vars namn är en md5-summa rörs, så
+    lang.json och last_used_bibfile.json står kvar.
+    """
+    try:
+        names = [n for n in os.listdir(CACHE_DIR)
+                 if re.fullmatch(r"[0-9a-f]{32}\.json", n)]
+        paths = sorted((os.path.join(CACHE_DIR, n) for n in names),
+                       key=os.path.getmtime, reverse=True)
+        for old in paths[keep:]:
+            os.remove(old)
+    except OSError:
+        pass  # gallring är städning, aldrig ett skäl att fallera
+
 
 def md5sum(file_path):
     if not os.path.isfile(file_path):
@@ -331,15 +372,19 @@ def load_bibtex(file_paths, verbose=None):
     except FileNotFoundError as e:
         print(f"Error loading bib: {e}", file=sys.stderr)
         return
-    if len(digests) == 1:
-        cache_id = digests[0]
-    else:
-        cache_id = hashlib.md5("|".join(digests).encode()).hexdigest()
+    # Cachen bär färdigresolvad data (crossref-arv), så nyckeln innehåller
+    # även skriptets egen hash: en ändrad arvsregel ger då ny cache utan att
+    # någon behöver komma ihåg att bumpa CACHE_VERSION.
+    cache_id = hashlib.md5("|".join([_script_digest()] + digests).encode()).hexdigest()
     cfile = os.path.join(CACHE_DIR, cache_id + ".json")
     shown = ", ".join(file_paths)
 
     cached_entries, cached_index = load_from_cache(cfile)
     if cached_entries:
+        try:
+            os.utime(cfile)  # senast använd, för gallringen i _prune_cache
+        except OSError:
+            pass
         if DEBUG_MODE:
             print(f"[DEBUG] Loading from cache: {cfile}")
         bib_data = cached_entries
@@ -380,6 +425,7 @@ def load_bibtex(file_paths, verbose=None):
             processed_entries_cache = [(i, s) for i, s in enumerate(search_index)]
 
             save_to_cache(bib_data, cfile, search_index)
+            _prune_cache(keep=CACHE_KEEP)
             save_last_used_file(file_paths)
         except Exception as e:
             print(f"Error loading bib: {e}", file=sys.stderr)
