@@ -534,12 +534,79 @@ def _tidy(text):
     return text
 
 
+def _split_names(raw):
+    """Delar en BibTeX-namnlista vid ' and ' utanför klamrar, före avkodning.
+
+    Klamrarna är det enda som skiljer ett kollektivt namn från en person, och
+    LaTeX-avkodningen tar bort dem. Alla som behöver namnen ska gå via denna."""
+    raw = raw or ""
+    sep = re.compile(r"\s+and\s+")
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(raw):
+        c = raw[i]
+        if c == "\\":  # \{ och \} öppnar eller stänger ingen grupp
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth = max(depth - 1, 0)  # en lös } får inte stänga av delningen
+        elif depth == 0:
+            m = sep.match(raw, i)
+            if m:
+                parts.append(raw[start:i])
+                i = start = m.end()
+                continue
+        i += 1
+    parts.append(raw[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _is_literal_name(name):
+    """Sant om hela namnet är en enda klammergrupp: {Karlstads universitet, X}.
+
+    '{von Neumann}, John' och '{A} {B}' är personnamn med klamrade delar."""
+    if not (name.startswith("{") and name.endswith("}")):
+        return False
+    depth, i = 0, 0
+    while i < len(name):
+        c = name[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i == len(name) - 1
+        i += 1
+    return False
+
+
+def _unless_author(value, raw_author):
+    """Tom sträng om utgivaren är samma som författaren (APA 7), annars värdet.
+
+    Bara när författarledet är just den utgivaren: är den en av flera
+    författare är utgivaren inte densamma som författaren, och står kvar."""
+    names = _split_names(raw_author)
+
+    def norm(text):
+        return " ".join(text.split()).casefold()
+
+    if len(names) == 1 and norm(safe_latex_to_text(names[0])) == norm(value):
+        return ""
+    return value
+
+
 def _person_list(raw, given_first=False):
-    """BibTeX-namnlista → APA-namn. Över 20 namn: 19, '...', sista."""
+    """BibTeX-namnlista → APA-namn. Över 20 namn: 19, '...', sista.
+    Ett helt klamrat namn är kollektivt och skrivs ut oförändrat."""
     names = []
-    for a in safe_latex_to_text(raw).split(" and "):
-        a = a.strip()
-        if not a:
+    for name in _split_names(raw):
+        a = safe_latex_to_text(name).strip()
+        if _is_literal_name(name):
+            names.append(a)
             continue
         parts = a.split(",")
         if len(parts) == 2:
@@ -634,7 +701,7 @@ def generate_apa(entry):
       - Tidskrift: *Tidskrift*, *volym*(nummer), sidor. Utan volym: *Tidskrift*, (nummer).
       - Kapitel: I F. Efternamn (Red.), *Bok* (uppl., s. x–y). Förlag.
       - Avhandling: *Titel* [Doktorsavhandling, Lärosäte]. Fältet `type` styr etiketten.
-      - Utgivningsort utelämnas (APA 7).
+      - Utgivningsort utelämnas (APA 7), liksom utgivare som är samma som författaren.
       - DOI som https://doi.org/…, annars URL, sist.
     """
     if DEBUG_MODE:
@@ -648,7 +715,7 @@ def generate_apa(entry):
     names = _person_list(raw_author) if raw_author else ["Unknown"]
     authors_str = _join_names(names)
     if is_editor:
-        n_ed = len([a for a in raw_author.split(" and ") if a.strip()])
+        n_ed = len(_split_names(raw_author))
         authors_str += f" ({lab['ed1'] if n_ed == 1 else lab['edn']})"
     if not authors_str.endswith("."):
         # APA: punkt efter författarledet även för organisationer ("Skolverket.")
@@ -662,7 +729,11 @@ def generate_apa(entry):
 
     pp = _pages(entry.get("pages", ""))
     edition = _edition(entry.get("edition", ""))
-    pub = safe_latex_to_text(entry.get("publisher", "")).strip()
+    # Utgivaren gäller hela verket: i ett kapitel är det redaktören, inte
+    # kapitlets författare, som står som verkets upphovsman.
+    is_chapter = entry.get("entrytype", "").lower() in ("incollection", "inbook")
+    work_author = (entry.get("editor") or raw_author) if is_chapter else raw_author
+    pub = _unless_author(safe_latex_to_text(entry.get("publisher", "")).strip(), work_author)
 
     # 4) Länk
     doi = entry.get("doi", "").strip()
@@ -706,7 +777,7 @@ def generate_apa(entry):
             body += f"{lab['in']} "
             if raw_ed and raw_ed != raw_author:
                 eds = _person_list(raw_ed, given_first=True)
-                n_ed = len([e for e in raw_ed.split(" and ") if e.strip()])
+                n_ed = len(_split_names(raw_ed))
                 body += f"{_join_names(eds, given_first=True)} ({lab['ed1'] if n_ed == 1 else lab['edn']}), "
             body += f"*{bk}*"
             paren = [x for x in (edition, f"{_page_label(pp)} {pp}" if pp else "") if x]
@@ -757,7 +828,9 @@ def generate_apa(entry):
             body += f" {pub}."
     elif et in ("misc", "online", "electronic", "www"):
         body += f"*{title}*."
-        inst = safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip()
+        inst = _unless_author(
+            safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip(),
+            raw_author)
         series = safe_latex_to_text(entry.get("series", "")).strip()
         if inst:
             body += f" {inst}."
@@ -993,10 +1066,12 @@ def search_entries(query):
 # -------------------------------------------------
 def parse_authors_for_compact(entry,semicolon=True):
     raw= entry.get("author","") or entry.get("editor","")
-    r= safe_latex_to_text(raw)
-    splitted= r.split(" and ")
     out=[]
-    for a in splitted:
+    for name in _split_names(raw):
+        a= safe_latex_to_text(name)
+        if _is_literal_name(name):
+            out.append(a.strip())
+            continue
         parts= a.split(",")
         if len(parts)==2:
             ln= parts[0].strip()

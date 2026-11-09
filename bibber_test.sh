@@ -220,6 +220,127 @@ cat > "$TMP/main.bib" <<'EOF'
   publisher = {Förlag},
   year = {2000}
 }
+@www{KollKomma,
+  author = {{Karlstads universitet, rektorsbeslut}},
+  organization = {Karlstads universitet},
+  title = {Examensordning},
+  year = {2021}
+}
+@www{KollUtgivare,
+  author = {{Karlstads universitet}},
+  organization = {Karlstads universitet},
+  title = {Examensordning},
+  url = {https://example.org/e},
+  year = {2021}
+}
+@www{KollAnnanOrg,
+  author = {{Karlstads universitet}},
+  organization = {Skolverket},
+  title = {Examensordning},
+  year = {2021}
+}
+@misc{KollInst,
+  author = {{Skolverket}},
+  institution = {Skolverket},
+  title = {Rapport},
+  year = {2020}
+}
+@misc{KollMiscUtgivare,
+  author = {{Skolverket}},
+  publisher = {Skolverket},
+  title = {Rapport},
+  year = {2020}
+}
+@book{KollBokAnnan,
+  author = {{Skolverket}},
+  publisher = {Norstedts},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollSkiftlage,
+  author = {{Skolverket}},
+  publisher = {SKOLVERKET},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollOinklamrad,
+  author = {Skolverket},
+  publisher = {Skolverket},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollOch,
+  author = {{Svenska kyrkan and Skolverket}},
+  publisher = {Verbum},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollFlera,
+  author = {Niemi, Kristian and {Karlstads universitet, rektorsbeslut} and Hartman, Sven G.},
+  publisher = {Karlstads universitet},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollPerson,
+  author = {Efternamn, Förnamn},
+  publisher = {Efternamn, Förnamn},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollDelklamrad,
+  author = {{von Neumann}, John},
+  publisher = {Förlag},
+  title = {Bok},
+  year = {2020}
+}
+@book{KollRed,
+  editor = {{Skolverket, enheten} and {Karlstads universitet}},
+  publisher = {Skolverket, enheten},
+  title = {Antologi},
+  year = {2020}
+}
+@book{KollEnRed,
+  editor = {{Skolverket}},
+  publisher = {Skolverket},
+  title = {Antologi},
+  year = {2020}
+}
+@incollection{KollKap,
+  author = {{Skolverket}},
+  editor = {{Karlstads universitet, rektorsbeslut} and Niemi, Kristian},
+  booktitle = {Antologi},
+  publisher = {Skolverket},
+  title = {Kapitel},
+  year = {2020}
+}
+@incollection{KollKapRedUtg,
+  author = {Niemi, Kristian},
+  editor = {{Skolverket}},
+  booktitle = {Antologi},
+  publisher = {Skolverket},
+  title = {Kapitel},
+  year = {2020}
+}
+@inbook{KollInbook,
+  author = {{Skolverket}},
+  booktitle = {Antologi},
+  publisher = {Skolverket},
+  title = {Kapitel},
+  year = {2020}
+}
+@inproceedings{KollKonf,
+  author = {{Skolverket}},
+  booktitle = {Konferens},
+  publisher = {Skolverket},
+  title = {Bidrag},
+  year = {2020}
+}
+@techreport{KollRapport,
+  author = {{Skolverket}},
+  publisher = {Skolverket},
+  title = {Rapport},
+  year = {2020}
+}
 EOF
 
 cat > "$TMP/lokal.bib" <<'EOF'
@@ -347,12 +468,12 @@ check "frågetitel med undertitel" \
 
 # --- Organisation som författare får punkt
 out="$(run --lang sv -k Org2025)"
-check "organisation" "Skolverket. (2025). *Ämnesplan i religionskunskap*. Skolverket." "$out"
+check "organisation" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$out"
 
 # --- Flera nycklar: given ordning, ett stycke per referens
 out="$(run --lang sv -k Org2025 Utanvol2018)"
 expected="$(printf '%s\n\n%s' \
-    "Skolverket. (2025). *Ämnesplan i religionskunskap*. Skolverket." \
+    "Skolverket. (2025). *Ämnesplan i religionskunskap*." \
     "Niemi, K. (2018). Religionsvetenskapliga tröskelbegrepp. *Nordidactica*, (2), 1–22.")"
 check "flera -k i ordning" "$expected" "$out"
 
@@ -360,7 +481,7 @@ check "flera -k i ordning" "$expected" "$out"
 "$BIBBER" -b "$TMP/main.bib" --lang sv -k Org2025 Finnsinte >"$TMP/o" 2>"$TMP/e"
 rc=$?
 check "saknad nyckel exit" "1" "$rc"
-check "saknad nyckel stdout" "Skolverket. (2025). *Ämnesplan i religionskunskap*. Skolverket." "$(cat "$TMP/o")"
+check "saknad nyckel stdout" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$(cat "$TMP/o")"
 contains "saknad nyckel stderr" "Finnsinte" "$(cat "$TMP/e")"
 
 # --- --keys: fil med kommentarer och tomma rader; '-' läser stdin
@@ -368,10 +489,10 @@ printf '# litteraturlista\nUtanvol2018\n\nOrg2025  # organisation\n' > "$TMP/key
 out="$(run --lang sv --keys "$TMP/keys.txt")"
 expected="$(printf '%s\n\n%s' \
     "Niemi, K. (2018). Religionsvetenskapliga tröskelbegrepp. *Nordidactica*, (2), 1–22." \
-    "Skolverket. (2025). *Ämnesplan i religionskunskap*. Skolverket.")"
+    "Skolverket. (2025). *Ämnesplan i religionskunskap*.")"
 check "--keys fil" "$expected" "$out"
 out="$(printf 'Org2025\n' | "$BIBBER" -b "$TMP/main.bib" --lang sv --keys - 2>/dev/null)"
-check "--keys stdin" "Skolverket. (2025). *Ämnesplan i religionskunskap*. Skolverket." "$out"
+check "--keys stdin" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$out"
 
 # --- Flera -b: första filen vinner, crossref över filgränsen
 out="$("$BIBBER" -b "$TMP/lokal.bib" -b "$TMP/main.bib" --lang sv -k Delad2000 2>/dev/null)"
@@ -383,7 +504,7 @@ contains "crossref över filer" "I C. Bakker & H.-G. Heimbrock (Red.), *Research
 
 # --- Positionell .bib-fil efter -k sväljs inte som nyckel
 out="$("$BIBBER" --lang sv -k Org2025 "$TMP/main.bib" 2>/dev/null)"
-check "-k KEY fil.bib" "Skolverket. (2025). *Ämnesplan i religionskunskap*. Skolverket." "$out"
+check "-k KEY fil.bib" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$out"
 
 # --- Sökning -n1 ger APA-referens
 out="$(run --lang sv -n1 Toleransens altare)"
@@ -414,6 +535,77 @@ check "--lang sparas inte" "no" "$([ -e "$BIBBER_CACHE_DIR/lang.json" ] && echo 
 # --- -f bib orörd av APA-ändringarna
 out="$(run -f bib -k Amp2026)"
 contains "bib-format" 'journal = {Religion \& Livsfrågor},' "$out"
+
+# --- Kollektiv författare: ett klamrat namn delas inte och initialförkortas inte
+out="$(run --lang sv -k KollKomma)"
+check "klamrat namn med komma" \
+    "Karlstads universitet, rektorsbeslut. (2021). *Examensordning*. Karlstads universitet." \
+    "$out"
+out="$(run --lang sv -k KollOch)"
+check "klamrat namn med and" "Svenska kyrkan and Skolverket. (2020). *Bok*. Verbum." "$out"
+out="$(run --lang sv -k KollFlera)"
+check "kollektiv bland personer" \
+    "Niemi, K., Karlstads universitet, rektorsbeslut, & Hartman, S. G. (2020). *Bok*. Karlstads universitet." \
+    "$out"
+out="$(run --lang sv -k KollDelklamrad)"
+contains "delklamrad person" "von Neumann, J. (2020)." "$out"
+out="$(run --lang sv -k Utanvol2018)"
+contains "person med komma" "Niemi, K. (2018)." "$out"
+
+# --- Antal redaktörer räknas med klamrarna i behåll
+out="$(run --lang sv -k KollRed)"
+check "kollektiva redaktörer" \
+    "Skolverket, enheten, & Karlstads universitet (Red.). (2020). *Antologi*. Skolverket, enheten." \
+    "$out"
+out="$(run --lang sv -k KollKap)"
+check "kollektiv kapitelredaktör, utgivaren står kvar" \
+    "Skolverket. (2020). Kapitel. I Karlstads universitet, rektorsbeslut & K. Niemi (Red.), *Antologi*. Skolverket." \
+    "$out"
+out="$(run --lang sv -k KollKapRedUtg)"
+check "kapitel: redaktör = utgivare" \
+    "Niemi, K. (2020). Kapitel. I Skolverket (Red.), *Antologi*." "$out"
+out="$(run --lang sv -k KollInbook)"
+check "inbook utan redaktör: författare = utgivare" \
+    "Skolverket. (2020). Kapitel. I *Antologi*." "$out"
+
+# --- Utgivaren utelämnas när den är författaren, i alla grenar som skriver ut den
+out="$(run --lang sv -k KollUtgivare)"
+check "organization = författare" \
+    "Karlstads universitet. (2021). *Examensordning*. https://example.org/e" "$out"
+out="$(run --lang sv -k KollAnnanOrg)"
+check "organization ≠ författare" \
+    "Karlstads universitet. (2021). *Examensordning*. Skolverket." "$out"
+out="$(run --lang sv -k KollInst)"
+check "institution = författare" "Skolverket. (2020). *Rapport*." "$out"
+out="$(run --lang sv -k KollMiscUtgivare)"
+check "misc publisher = författare" "Skolverket. (2020). *Rapport*." "$out"
+out="$(run --lang sv -k KollBokAnnan)"
+check "publisher ≠ författare" "Skolverket. (2020). *Bok*. Norstedts." "$out"
+out="$(run --lang sv -k KollSkiftlage)"
+check "jämförelsen skiftlägesokänslig" "Skolverket. (2020). *Bok*." "$out"
+out="$(run --lang sv -k KollOinklamrad)"
+check "oklamrad organisation = utgivare" "Skolverket. (2020). *Bok*." "$out"
+out="$(run --lang sv -k KollEnRed)"
+check "redaktör = utgivare" "Skolverket (Red.). (2020). *Antologi*." "$out"
+out="$(run --lang sv -k KollKonf)"
+check "inproceedings utgivare = författare" "Skolverket. (2020). Bidrag. I *Konferens*." "$out"
+out="$(run --lang sv -k KollRapport)"
+check "övrig typ utgivare = författare" "Skolverket. (2020). Rapport." "$out"
+out="$(run --lang sv -k KollPerson)"
+contains "person lika med utgivare: Efternamn, F." "Efternamn, F. (2020). *Bok*." "$out"
+
+# --- Listvyns kortform använder samma namnuppdelning (ingen CLI-väg utan TUI)
+out="$("$(head -1 "$BIBBER" | cut -c3-)" - "$BIBBER" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("bibber", sys.argv[1])
+spec = importlib.util.spec_from_loader("bibber", loader)
+m = importlib.util.module_from_spec(spec)
+loader.exec_module(m)
+print(m.parse_authors_for_compact({"author": "{Karlstads universitet, rektorsbeslut} and Niemi, Kristian"}))
+print(m._split_names("Foo} and Bar, Baz"))
+PY
+)"
+check "kortform" "$(printf '%s\n%s' "Karlstads universitet, rektorsbeslut; Niemi K" "['Foo}', 'Bar, Baz']")" "$out"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
