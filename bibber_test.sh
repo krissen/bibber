@@ -607,5 +607,94 @@ PY
 )"
 check "kortform" "$(printf '%s\n%s' "Karlstads universitet, rektorsbeslut; Niemi K" "['Foo}', 'Bar, Baz']")" "$out"
 
+# --- @article med crossref till @periodical: tidskriftsnamn, bara vitlistade fält
+cat > "$TMP/period.bib" <<'EOF2'
+@periodical{Nr2016,
+  title = {Tidskrift för läraryrket},
+  subtitle = {Undertitel för numret},
+  year = {2016},
+  volume = {5},
+  number = {2},
+  issn = {1234-5678},
+  editor = {Åkesson, Östen},
+  note = {Anmärkning om numret},
+  series = {Serie},
+  publisher = {Förlaget},
+  keywords = {nyckelord},
+  doi = {10.1000/nummer},
+  file = {:nr.pdf:PDF},
+  pdfpageoffset = {7}
+}
+@article{BidragA2016,
+  author = {Öberg, Åsa},
+  title = {Räkna på lärare},
+  pages = {12-34},
+  crossref = {Nr2016}
+}
+@article{BidragB2016,
+  author = {Ström, Ärlig},
+  title = {Skriva för skolan},
+  pages = {35-50},
+  crossref = {Nr2016}
+}
+@article{Annat2016,
+  author = {Öberg, Åsa},
+  title = {Artikel i bok},
+  pages = {1-2},
+  crossref = {Bok2007}
+}
+@article{EgenJournal,
+  author = {Öberg, Åsa},
+  title = {Med eget journal},
+  journal = {Egen tidskrift},
+  pages = {1-2},
+  crossref = {Nr2016}
+}
+@article{EgenJournaltitle,
+  author = {Öberg, Åsa},
+  title = {Med eget journaltitle},
+  journaltitle = {Egen tidskrift 2},
+  pages = {3-4},
+  crossref = {Nr2016}
+}
+EOF2
+prun() { "$BIBBER" -b "$TMP/period.bib" -b "$TMP/main.bib" "$@" 2>/dev/null; }
+out="$(prun --lang sv -k BidragA2016)"
+check "artikel i periodical sv" \
+    "Öberg, Å. (2016). Räkna på lärare. *Tidskrift för läraryrket*, *5*(2), 12–34." \
+    "$out"
+out="$(prun --lang sv -k BidragB2016)"
+check "artikel i periodical nr 2" \
+    "Ström, Ä. (2016). Skriva för skolan. *Tidskrift för läraryrket*, *5*(2), 35–50." \
+    "$out"
+out="$(prun --lang sv -k BidragA2016)"
+lacks "ingen redaktör" "Red." "$out"
+lacks "ingen note" "Anmärkning" "$out"
+lacks "ingen doi" "doi.org" "$out"
+out="$(prun -f bib -k BidragA2016)"
+contains "bib: journaltitle" "journaltitle = {Tidskrift för läraryrket}" "$out"
+for f in editor note series publisher keywords doi file pdfpageoffset; do
+    lacks "bib: $f ärvs inte" "$f =" "$out"
+done
+out="$(prun -f bib -k EgenJournal)"
+contains "eget journal behålls" "journal = {Egen tidskrift}" "$out"
+lacks "eget journal: ingen journaltitle från numret" "journaltitle" "$out"
+lacks "eget journal: ingen journalsubtitle" "journalsubtitle" "$out"
+out="$(prun --lang sv -k EgenJournal)"
+contains "eget journal i apa" "*Egen tidskrift*, *5*(2), 1–2." "$out"
+lacks "eget journal: numrets namn syns inte" "läraryrket" "$out"
+out="$(prun -f bib -k EgenJournaltitle)"
+contains "eget journaltitle behålls" "journaltitle = {Egen tidskrift 2}" "$out"
+lacks "eget journaltitle: inget journal från numret" "journal = " "$out"
+out="$(prun --lang sv -k EgenJournaltitle)"
+contains "eget journaltitle i apa" "*Egen tidskrift 2*, *5*(2), 3–4." "$out"
+out="$(prun -f bib -k BidragA2016)"
+contains "utan eget: journalsubtitle ärvs" "journalsubtitle = {Undertitel för numret}" "$out"
+out="$(prun --lang sv -k Annat2016)"
+lacks "article->book oförändrad: ingen journaltitle" "Tidskrift" "$out"
+out="$(prun -f bib -k Annat2016)"
+lacks "article->book: ingen journaltitle" "journaltitle" "$out"
+contains "article->book: ärver som förut (publisher)" "publisher = {Waxmann}" "$out"
+
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

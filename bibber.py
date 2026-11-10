@@ -90,6 +90,20 @@ CROSSREF_CONTAINED_FIELDS = {
     "year", "date", "series", "volume", "edition", "booktitle",
     "booksubtitle", "booktitleaddon", "location", "address", "language",
 }
+# biblatex-arv periodical -> article/suppperiodical: numrets title är
+# tidskriftens namn och blir barnets journaltitle. Bara en vitlista ärvs;
+# numrets editor, note, series, file m.m. beskriver numret, inte artikeln,
+# och okända fält (t.ex. pdfpageoffset) ska aldrig följa med.
+PERIODICAL_TITLE_MAP = {
+    "title": "journaltitle",
+    "subtitle": "journalsubtitle",
+    "titleaddon": "journaltitleaddon",
+}
+PERIODICAL_CHILD_TYPES = {"article", "suppperiodical"}
+PERIODICAL_INHERIT_FIELDS = {
+    "year", "date", "month", "volume", "number", "issue", "issn", "language",
+    "journal", "journaltitle",
+}
 CROSSREF_SKIP = {
     "crossref", "xref", "ids", "entrytype", "shorttitle", "shorthand",
     "doi", "isbn", "url", "urldate", "file", "abstract", "keywords",
@@ -113,6 +127,19 @@ def resolve_crossrefs_dict(entries):
         # Titelflytten gäller bara delar av en samlingsvolym (som i biblatex);
         # en bok som crossrefar en annan bok ärver titeln som vanligt.
         contained = entry.get("entrytype", "").lower() in CROSSREF_CONTAINED_TYPES
+        from_periodical = (
+            entry.get("entrytype", "").lower() in PERIODICAL_CHILD_TYPES
+            and parent.get("entrytype", "").lower() == "periodical"
+        )
+        # journal och journaltitle är ett par, som year/date: har barnet ett
+        # av dem ärvs varken numrets title (med subtitle/titleaddon) eller
+        # förälderns journal/journaltitle, annars skuggar de barnets eget.
+        own_journal = bool(entry.get("journal") or entry.get("journaltitle"))
+        if from_periodical and not own_journal:
+            for src, dst in PERIODICAL_TITLE_MAP.items():
+                val = parent.get(src)
+                if val and not entry.get(dst):
+                    entry[dst] = val
         if contained:
             for src, dst in CROSSREF_TITLE_MAP.items():
                 val = parent.get(src)
@@ -123,6 +150,11 @@ def resolve_crossrefs_dict(entries):
         own_date = bool(entry.get("year") or entry.get("date"))
         for fkey, val in parent.items():
             if fkey in CROSSREF_SKIP or (contained and fkey in CROSSREF_TITLE_MAP):
+                continue
+            if from_periodical and (
+                fkey not in PERIODICAL_INHERIT_FIELDS
+                or (own_journal and fkey in ("journal", "journaltitle"))
+            ):
                 continue
             if own_date and fkey in ("year", "date"):
                 continue
