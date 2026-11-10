@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv,
+# Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar,
 # flera nycklar (-k, --keys) och flera .bib-filer (-b).
 #
 # Användning: ./bibber_test.sh [sökväg/till/bibber.py]
@@ -695,6 +695,38 @@ lacks "article->book oförändrad: ingen journaltitle" "Tidskrift" "$out"
 out="$(prun -f bib -k Annat2016)"
 lacks "article->book: ingen journaltitle" "journaltitle" "$out"
 contains "article->book: ärver som förut (publisher)" "publisher = {Waxmann}" "$out"
+
+# --- @legislation: Lunds APA 7-guide, "SFS ÅÅÅÅ:Nummer. *Titel*. URL"
+cat > "$TMP/lag.bib" <<'BIB'
+@legislation{Skollag, number = {2010:800}, title = {Skollag}, version = {2026:1636},
+  institution = {Utbildningsdepartementet}, year = {2010}, location = {Stockholm},
+  url = {https://www.riksdagen.se/sv/dokument-och-lagar/dokument/svensk-forfattningssamling/skollag-2010800_sfs-2010-800/}}
+@legislation{HF, number = {SFS 1993:100}, title = {Högskoleförordning (1993:100)}}
+@legislation{Annat, number = {2011:144}, series = {SKOLFS}, title = {Föreskrift}}
+@law{Alias, number = {1998:808}, title = {Miljöbalk}, note = {Anmärkning}}
+@legislation{AnnatNr, number = {1998:808}, title = {Lag (1999:1)}}
+@legislation{UtanNr, author = {{Riksdagen}}, title = {Utan nummer}}
+@legislation{SerieVersion, number = {2011:144}, series = {SKOLFS}, title = {Föreskrift},
+  version = {2020:5}, note = {Anm}}
+BIB
+lrun() { "$BIBBER" -b "$TMP/lag.bib" "$@" 2>/dev/null; }
+PY="$(head -1 "$BIBBER" | /usr/bin/sed "s/^#!//")"  # samma tolk som bibber.py; ord-delas avsiktligt (env-shebang)
+check "lag sv: beteckning, kursiv titel, lydelse, url" \
+    "SFS 2010:800. *Skollag* [ändrad t.o.m. SFS 2026:1636]. https://www.riksdagen.se/sv/dokument-och-lagar/dokument/svensk-forfattningssamling/skollag-2010800_sfs-2010-800/" \
+    "$(lrun --lang sv -k Skollag)"
+contains "lag en: lydelse" "*Skollag* [amended up to and including SFS 2026:1636]." "$(lrun --lang en -k Skollag)"
+out="$(lrun --lang sv -k Skollag)"
+lacks "lag: inget årtal i parentes" "(2010)" "$out"
+lacks "lag: inget departement" "Utbildningsdepartementet" "$out"
+check "lag: SFS-prefix i numret, titelns nummer stryks" "SFS 1993:100. *Högskoleförordning*." "$(lrun --lang sv -k HF)"
+check "lag: annan författningssamling via series" "SKOLFS 2011:144. *Föreskrift*." "$(lrun --lang sv -k Annat)"
+check "lag: @law som alias, note före länk" "SFS 1998:808. *Miljöbalk*. [Anmärkning]" "$(lrun --lang sv -k Alias)"
+check "lag: annat nummer i titeln står kvar" "SFS 1998:808. *Lag (1999:1)*." "$(lrun --lang sv -k AnnatNr)"
+check "lag: utan nummer står författaren som beteckning" "Riksdagen. *Utan nummer*." "$(lrun --lang sv -k UtanNr)"
+check "lag: version tar series-prefixet, note efter" \
+    "SKOLFS 2011:144. *Föreskrift* [ändrad t.o.m. SKOLFS 2020:5]. [Anm]" "$(lrun --lang sv -k SerieVersion)"
+check "lag: kort form" "SFS 1993:100. Högskoleförordning" \
+    "$($PY -c 'import sys; sys.path.insert(0, sys.argv[1]); import bibber; print(bibber.build_standard_reference_short({"entrytype": "legislation", "number": "1993:100", "title": "Högskoleförordning (1993:100)"}))' "$(dirname "$BIBBER")" 2>&1)"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

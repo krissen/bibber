@@ -475,6 +475,7 @@ APA_LABELS = {
         "phd": "Doktorsavhandling", "lic": "Licentiatuppsats",
         "master": "Masteruppsats", "thesis": "Examensarbete",
         "retrieved": "Hämtad {date} från {url}",
+        "amended": "ändrad t.o.m. {version}",
     },
     "en": {
         "no_date": "n.d.", "ed1": "Ed.", "edn": "Eds.", "in": "In",
@@ -482,6 +483,7 @@ APA_LABELS = {
         "phd": "Doctoral dissertation", "lic": "Licentiate thesis",
         "master": "Master's thesis", "thesis": "Thesis",
         "retrieved": "Retrieved {date}, from {url}",
+        "amended": "amended up to and including {version}",
     },
 }
 
@@ -724,6 +726,43 @@ def _thesis_institution(entry):
     return cands[0]
 
 
+# Författningar (@legislation). APA 7 saknar regler för lagstiftning utanför USA;
+# formen följer Lunds universitetsbiblioteks APA 7-guide "Svenska lagar och
+# förordningar" (uppdaterad 2026-05-21, vyasa LUB2026apa7lagar):
+#   SFS ÅÅÅÅ:Nummer. *Titel*. URL
+# Beteckningen står i författarens plats, inget årtal i parentes, ingen
+# utgivare eller ort. Lydelsen (`version`) är bibbers tillägg, som guiden inte
+# behandlar; formuleringen följer riksdagen.se:s "Ändrad: t.o.m. SFS …".
+LEGISLATION_TYPES = {"legislation", "law"}
+
+
+def _sfs(raw, series):
+    """'2010:800' eller 'SFS 2010:800' -> 'SFS 2010:800' (prefix ur `series`)."""
+    raw = safe_latex_to_text(raw or "").strip()
+    if not raw:
+        return ""
+    if re.match(r"^\d", raw):
+        return f"{series} {raw}"
+    return raw
+
+
+def _legislation_parts(entry):
+    """(beteckning, titel, lydelse) för en @legislation-post."""
+    series = safe_latex_to_text(entry.get("series", "")).strip() or "SFS"
+    number = safe_latex_to_text(entry.get("number", "")).strip()
+    designation = _sfs(number, series)
+    if not designation and entry.get("author"):
+        designation = _join_names(_person_list(entry["author"]))
+    title = _join_title(entry.get("title", ""), entry.get("subtitle", ""))
+    # Riksdagens titel bär numret ("Skollag (2010:800)"); APA-guiden utelämnar
+    # det, eftersom det redan står i beteckningen. Bara exakt samma nummer tas bort.
+    if number:
+        bare = re.sub(r"^\D+\s*", "", number)
+        title = re.sub(r"\s*\(" + re.escape(bare) + r"\)\s*$", "", title)
+    version = _sfs(entry.get("version", ""), series)
+    return designation, title, version
+
+
 def generate_apa(entry):
     """
     APA 7-formatering (svenska eller engelska efter LANGUAGE).
@@ -734,6 +773,7 @@ def generate_apa(entry):
       - Kapitel: I F. Efternamn (Red.), *Bok* (uppl., s. x–y). Förlag.
       - Avhandling: *Titel* [Doktorsavhandling, Lärosäte]. Fältet `type` styr etiketten.
       - Utgivningsort utelämnas (APA 7), liksom utgivare som är samma som författaren.
+      - Författning (@legislation): SFS 2010:800. *Skollag* [ändrad t.o.m. SFS …]. URL
       - DOI som https://doi.org/…, annars URL, sist.
     """
     if DEBUG_MODE:
@@ -779,9 +819,19 @@ def generate_apa(entry):
     urldate = entry.get("urldate", "").strip()
 
     et = entry.get("entrytype", "").lower()
-    body = f"{authors_str} ({yr}). "
     note = entry.get("note") or entry.get("annotate")
     note_str = f" [{safe_latex_to_text(note).strip()}]" if note else ""
+
+    if et in LEGISLATION_TYPES:
+        designation, ltitle, version = _legislation_parts(entry)
+        body = f"{designation}. " if designation else ""
+        body += f"*{ltitle or title}*"
+        if version:
+            body += " [" + lab["amended"].format(version=version) + "]"
+        body = _tidy(body + "." + note_str)
+        return _tidy_space(f"{body} {link}") if link else _tidy_space(body)
+
+    body = f"{authors_str} ({yr}). "
 
     # ===== Avhandlingar =====
     # En @misc räknas som avhandling bara när fältet `type` ger en etikett;
@@ -1028,6 +1078,9 @@ def build_standard_reference_short(entry):
         t="Untitled"
 
     et= entry.get("entrytype","").lower()
+    if et in LEGISLATION_TYPES:
+        designation, ltitle, _ = _legislation_parts(entry)
+        return f"{designation}. {ltitle or t}" if designation else (ltitle or t)
     if et=="article":
         source= safe_latex_to_text(entry.get("journaltitle", entry.get("journal",""))).strip()
     elif et=="incollection":
