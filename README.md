@@ -37,6 +37,7 @@ bibber search terms             # interactive search (TUI)
 bibber -f bib -k KEY            # the BibTeX entry instead of APA
 bibber --lang sv -k KEY         # language for this run only
 bibber --lang en -k KEY --no-translation   # original titles only
+bibber --lang en -k A B --no-translation-for A   # …for one entry
 bibber -b local.bib -b main.bib -k KEY   # several files; the first one wins on duplicate keys
 ```
 
@@ -90,8 +91,9 @@ A few rules that go beyond the obvious:
   `Hylén, T. (2012). Essentialism i religionsundervisningen: … [Essentialism in teaching religion: …].`
   Without a field for the output language, nothing is added. A Swedish
   text, for example, does not translate English titles.
-  `--no-translation KEY …` drops the translation for those entries, and
-  `--no-translation` on its own drops it everywhere. The krissen-tex module
+  `--no-translation-for KEY` drops the translation for one entry, which can be
+  named by key or by an `ids` alias. The option can be repeated.
+  `--no-translation` drops it everywhere. The krissen-tex module
   `krissen_translation` does the same in biblatex-apa.
 - **Aliases.** `-k` also finds an entry by any key listed in its `ids` field,
   as biblatex does.
