@@ -45,6 +45,13 @@ Fix a wrong reference where it arises. A wrong field in a library file is fixed
 in the library (via vyasa), not by special-casing it in bibber. A missing
 rendering rule is fixed here.
 
+## Versions
+
+The release is `version` in `pyproject.toml`, and a release is the tag
+`v<version>` on that commit. `bibber --version` derives everything else (see
+`version_string()`), so never hard-code a version string anywhere else. Bump
+`pyproject.toml` and tag in the same release.
+
 ## Workflow
 
 The global instructions apply in full. They cover Conventional Commits with a

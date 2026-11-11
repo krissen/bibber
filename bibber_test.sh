@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar, titleaddon, rapporter,
-# flera nycklar (-k, --keys), flera .bib-filer (-b), standardfilen och översatta titlar.
+# flera nycklar (-k, --keys), flera .bib-filer (-b), standardfilen, översatta titlar och --version.
 #
 # Användning: ./bibber_test.sh [sökväg/till/bibber.py]
 # Tolken är repots venv (.venv/bin/python); BIBBER_PYTHON väljer en annan.
@@ -858,6 +858,40 @@ check "--no-translation-for upprepas" \
     "$(trun --lang en --no-translation-for TrArt2012 -k TrArt2012 TrLag --no-translation-for TrLag)"
 check "klamrar: bara ett omslutande par tas bort (översättning och titleaddon)" \
     "Ek, A. (2001). *Boken* [[The] book [revised]] [[Del 1] och [Del 2]]." "$(trun --lang en -k TrKlam2001)"
+
+# --- Version: x.y.z på release-taggen, x.y.z+commit annars (samma regel som bifrost)
+V="$TMP/vrepo"; mkdir -p "$V"
+cp "$BIBBER" "$V/bibber.py"
+printf '[project]\nname = "bibber"\nversion = "9.8.7"\n' > "$V/pyproject.toml"
+g() { git -C "$V" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+vrun() { "$PY" "$V/bibber.py" "$@" 2>&1; }
+check "version: utan .git, den släppta versionen" "bibber 9.8.7" "$(vrun --version)"
+g init -q; g add -A; g commit -qm init
+sha="$(git -C "$V" rev-parse --short=7 HEAD)"
+check "version: otaggad commit ger +sha" "bibber 9.8.7+$sha" "$(vrun --version)"
+check "version: -V är samma flagga" "bibber 9.8.7+$sha" "$(vrun -V)"
+g tag v9.8.6
+check "version: en tagg för en annan version räknas inte" "bibber 9.8.7+$sha" "$(vrun --version)"
+g tag v9.8.7
+check "version: på release-taggen" "bibber 9.8.7" "$(vrun --version)"
+printf '\n' >> "$V/pyproject.toml"; g commit -qam efter
+sha2="$(git -C "$V" rev-parse --short=7 HEAD)"
+check "version: commit efter taggen ger +sha" "bibber 9.8.7+$sha2" "$(vrun --version)"
+check "version: arbetskatalogens repo används inte" "bibber 9.8.7+$sha2" "$(cd "$ROOT" && vrun --version)"
+W="$TMP/vwt"; g worktree add -q "$W" v9.8.7
+check "version: worktree (.git är en fil) på taggen" "bibber 9.8.7" "$("$PY" "$W/bibber.py" --version 2>&1)"
+mv "$V/.git" "$V/.git-off"; mkdir "$V/.git"
+check "version: .git utan svar från git ger +unknown" "bibber 9.8.7+unknown" "$(vrun --version)"
+rmdir "$V/.git"; mv "$V/.git-off" "$V/.git"
+out="$("$PY" "$BIBBER" -v --lang en -b "$TMP/main.bib" -k Org2025 2>&1)"
+contains "version: -v är fortfarande verbose" "Loading file: $TMP/main.bib" "$out"
+case "$out" in *"bibber "[0-9]*) FAIL=$((FAIL + 1)); echo "FAIL version: -v skriver ut versionen" ;; *) PASS=$((PASS + 1)) ;; esac
+D="$TMP/decoy"; mkdir -p "$D"; git -C "$D" -c core.hooksPath=/dev/null init -q
+git -C "$D" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m decoy
+git -C "$D" tag v9.8.7
+check "version: GIT_DIR till ett annat repo påverkar inte" "bibber 9.8.7+$sha2" "$(GIT_DIR="$D/.git" GIT_WORK_TREE="$D" vrun --version)"
+printf '[project]\nname = "bibber"\n' > "$V/pyproject.toml"; g commit -qam utanversion
+check "version: pyproject utan version tar inte miljöns" "bibber unknown+$(git -C "$V" rev-parse --short=7 HEAD)" "$(vrun --version)"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
