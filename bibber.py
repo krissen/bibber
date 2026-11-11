@@ -593,14 +593,30 @@ def _join_title(main, sub):
     return _cap_after_colon(main)
 
 
+def _unbracket(raw):
+    """Tar bort hakparenteser som omsluter HELA värdet, så att de inte
+    dubbleras när bibber sätter egna: '[Recension]' blir 'Recension', men
+    '[A] och [B]' lämnas orört (de yttre klamrarna hör inte ihop)."""
+    if not (raw.startswith("[") and raw.endswith("]")):
+        return raw
+    depth = 0
+    for i, ch in enumerate(raw):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0 and i < len(raw) - 1:
+                return raw
+    return raw[1:-1].strip()
+
+
 def _titleaddon(entry):
     """`titleaddon` som APA-beskrivning i hakparentes direkt efter titeln:
     'Smältdegel och mångkultur? [Recension av …].' (Purdue OWL, APA 7 Review).
     Beskrivningen hör till titelelementet, så punkten står efter hakparentesen,
     också när titeln slutar på ? eller !. Klamrar som redan står i fältet tas
     bort, så att de inte dubbleras."""
-    raw = safe_latex_to_text(entry.get("titleaddon", "")).strip()
-    raw = raw[1:-1].strip() if raw.startswith("[") and raw.endswith("]") else raw
+    raw = _unbracket(safe_latex_to_text(entry.get("titleaddon", "")).strip())
     return f" [{raw}]" if raw else ""
 
 
@@ -624,8 +640,7 @@ def _translation(entry, key=None):
         names.add(key.lower())
     if names & NO_TRANSLATION_KEYS:
         return ""
-    raw = safe_latex_to_text(entry.get(f"title_translation_{LANGUAGE}", "")).strip()
-    raw = raw[1:-1].strip() if raw.startswith("[") and raw.endswith("]") else raw
+    raw = _unbracket(safe_latex_to_text(entry.get(f"title_translation_{LANGUAGE}", "")).strip())
     return f" [{raw}]" if raw else ""
 
 
