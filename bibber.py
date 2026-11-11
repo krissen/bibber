@@ -261,6 +261,27 @@ def save_last_used_file(file_path):
     with open(last_used, "w") as f:
         json.dump({"last_used": file_path}, f)
 
+def default_bib_file():
+    """Standardfilen när -b saknas: $BIBBER_BIB, annars första raden i
+    $XDG_CONFIG_HOME/bibber/default_bib (~/.config/bibber/default_bib).
+    Finns ingen av dem används den senast använda filen. Sökvägen låg förut
+    hårdkodad i koden, vilket band verktyget till en enda användares bibliotek."""
+    env = os.environ.get("BIBBER_BIB", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    conf_dir = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    conf = os.path.join(os.path.expanduser(conf_dir), "bibber", "default_bib")
+    try:
+        with open(conf, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return os.path.expanduser(line)
+    except OSError:
+        pass
+    return ""
+
+
 def get_last_used_file():
     last_used = os.path.join(CACHE_DIR, "last_used_bibfile.json")
     if os.path.exists(last_used):
@@ -2275,7 +2296,7 @@ def main():
     VERBOSE_MODE = args.verbose
 
     # Bestäm bib-fil
-    DEFAULT_BIB = os.path.expanduser("~/Documents/lektionsplanering/kallor.bib")
+    DEFAULT_BIB = default_bib_file()
     bib_file = args.bibfile
 
     # Kolla om query innehåller en fil (bakåtkompatibilitet)
