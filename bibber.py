@@ -1,4 +1,4 @@
-#!/Users/krisniem/.local/share/miniforge3/envs/default/bin/python
+#!/usr/bin/env python3
 import argparse
 import collections
 import collections.abc
@@ -2229,7 +2229,8 @@ def show_popup(title_text, body_text):
 # -------------------------------------------------
 # 9) main
 # -------------------------------------------------
-if __name__ == "__main__":
+def main():
+    global LANGUAGE, DEBUG_MODE, VERBOSE_MODE
     load_language_setting()
     args = parse_args()
     if args.lang:
@@ -2374,3 +2375,6 @@ if __name__ == "__main__":
 
     interactive_shell()
 
+
+if __name__ == "__main__":
+    main()
