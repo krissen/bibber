@@ -531,6 +531,10 @@ out="$("$PY" "$BIBBER" --lang sv -k Delad2000 2>/dev/null)"
 contains "standardfil: config, kommentar och tom rad hoppas över" "Från huvudfilen" "$out"
 out="$(BIBBER_BIB="$TMP/lokal.bib" "$PY" "$BIBBER" --lang sv -k Delad2000 2>/dev/null)"
 contains "standardfil: BIBBER_BIB före config" "Från lokala filen" "$out"
+"$PY" "$BIBBER" --lang sv -k Delad2000 >/dev/null 2>"$TMP/e"
+check "standardfil: ingen varning när den finns" "" "$(cat "$TMP/e")"
+BIBBER_BIB="$TMP/saknas.bib" "$PY" "$BIBBER" --lang sv -k Delad2000 >/dev/null 2>"$TMP/e"
+contains "standardfil: varning när den saknas" "Standardfilen finns inte: $TMP/saknas.bib" "$(cat "$TMP/e")"
 rm "$XDG_CONFIG_HOME/bibber/default_bib"
 
 # --- Cachen följer skriptet: en ändrad kopia av bibber.py läser inte den gamla cachen
