@@ -13,7 +13,7 @@ The repo has its own venv. Never borrow conda `default`.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e .
 ./bibber_test.sh                       # PASS/FAIL count; exit 0 only when FAIL=0
-.venv/bin/ruff check bibber.py         # or plain `ruff check bibber.py`
+ruff check bibber.py                   # ruff is not a dependency; use the one on PATH
 ```
 
 - The live command is the symlink `~/bin/bibber`, which points to
