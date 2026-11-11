@@ -476,6 +476,8 @@ expected="$(printf '%s\n\n%s' \
     "Skolverket. (2025). *Ämnesplan i religionskunskap*." \
     "Niemi, K. (2018). Religionsvetenskapliga tröskelbegrepp. *Nordidactica*, (2), 1–22.")"
 check "flera -k i ordning" "$expected" "$out"
+out="$(run --lang sv -k Org2025 -k Utanvol2018)"
+check "upprepad -k samlas i ordning" "$expected" "$out"
 
 # --- Saknad nyckel: övriga skrivs, exit 1, varning på stderr
 "$BIBBER" -b "$TMP/main.bib" --lang sv -k Org2025 Finnsinte >"$TMP/o" 2>"$TMP/e"

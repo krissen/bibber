@@ -226,9 +226,11 @@ Interaktiva kommandon:
     parser.add_argument("query", nargs="*", help="Söktermer")
     parser.add_argument("-f", "--format", choices=["apa", "bib"], default="apa",
                         help="Outputformat (default: apa)")
-    parser.add_argument("-k", "--key", nargs="+", metavar="KEY",
+    # extend, inte standardvärdet store: annars ersätter varje upprepad -k den
+    # förra, och "-k A -k B" skrev tyst bara ut B.
+    parser.add_argument("-k", "--key", nargs="+", action="extend", metavar="KEY",
                         help="Hämta en eller flera citation keys direkt; en referens "
-                             "per stycke i given ordning")
+                             "per stycke i given ordning. -k kan upprepas")
     parser.add_argument("--keys", metavar="FIL",
                         help="Fil med en citation key per rad (tomma rader och "
                              "#-kommentarer hoppas över); '-' läser stdin")
