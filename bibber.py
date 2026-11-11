@@ -215,7 +215,21 @@ CACHE_VERSION = "4"  # Bump vid ändringar i cache-format (3: sökindex, 4: cros
 def _release_version(root):
     """Versionen i pyproject.toml bredvid källfilen, annars den installerade
     paketversionen. Källträdet går först: en checkout som körs direkt ska ange
-    sin egen version, inte den som råkar vara installerad i miljön."""
+    sin egen version, inte den som råkar vara installerad i miljön. Finns
+    pyproject.toml men saknar version är svaret 'unknown', av samma skäl."""
+    if os.path.exists(os.path.join(root, "pyproject.toml")):
+        return _pyproject_version(root) or "unknown"
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            return version("bibber")
+        except PackageNotFoundError:
+            return ""
+    except ImportError:
+        return ""
+
+
+def _pyproject_version(root):
     try:
         with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as f:
             in_project = False
@@ -229,14 +243,7 @@ def _release_version(root):
                         return m.group(1)
     except OSError:
         pass
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-        try:
-            return version("bibber")
-        except PackageNotFoundError:
-            return ""
-    except ImportError:
-        return ""
+    return ""
 
 
 # Miljövariabler som får git att läsa ett annat förråd än det -C pekar på,
