@@ -239,10 +239,18 @@ def _release_version(root):
         return ""
 
 
+# Miljövariabler som får git att läsa ett annat förråd än det -C pekar på,
+# t.ex. när bibber körs från en git-hook i ett annat repo.
+_GIT_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                 "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM")
+
+
 def _git(root, *args):
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPO_ENV}
     try:
         out = subprocess.run(["git", "-C", root, *args], capture_output=True,
-                             text=True, timeout=5, check=False)
+                             text=True, timeout=5, check=False, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout.strip() if out.returncode == 0 else None
