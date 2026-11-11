@@ -475,6 +475,8 @@ APA_LABELS = {
         "phd": "Doktorsavhandling", "lic": "Licentiatuppsats",
         "master": "Masteruppsats", "thesis": "Examensarbete",
         "retrieved": "Hämtad {date} från {url}",
+        "report_no": "{label} {number}",
+        "resreport": "Forskningsrapport", "techreport": "Teknisk rapport",
         "amended": "ändrad t.o.m. {version}",
     },
     "en": {
@@ -483,9 +485,46 @@ APA_LABELS = {
         "phd": "Doctoral dissertation", "lic": "Licentiate thesis",
         "master": "Master's thesis", "thesis": "Thesis",
         "retrieved": "Retrieved {date}, from {url}",
+        "report_no": "{label} No. {number}",
+        "resreport": "Research report", "techreport": "Technical report",
         "amended": "amended up to and including {version}",
     },
 }
+
+# Rapporter (@report, @techreport). APA 7: kursiv titel, därefter rapportens
+# beteckning i parentes och utgivaren om den inte är författaren. Formen följer
+# Lunds universitetsbiblioteks APA 7-guide (Rapporter, uppdaterad 2026-05-21):
+#   Rapportens titel (Rapport 5786). Utgivare. URL
+# och på engelska APA:s exempel "(NIH Publication No. 02-2650)" (Normandale
+# Community College, Quick Guide to APA References, rev. okt 2025).
+# Beteckningen är type eller series följt av number; biblatex typnycklar
+# (resreport, techreport) översätts. Utan type och series står numret ensamt:
+# en etikett som "Rapport" hittas inte på, eftersom numret ofta är ett
+# diarienummer. En serie utan nummer står i parentes som i Lunds mall; en typ
+# utan nummer är en beskrivning och står i hakparentes. Finns både serie och
+# typ hör numret till serien, och typen blir beskrivningen.
+REPORT_TYPES = {"report", "techreport"}
+REPORT_TYPE_KEYS = {"resreport": "resreport", "techreport": "techreport"}
+
+
+def _report_designation(entry):
+    """(parentes, hakparentes) för en rapport, t.ex. ('Rapport 5786', '')."""
+    lab = _labels()
+    raw_type = safe_latex_to_text(entry.get("type", "")).strip()
+    key = REPORT_TYPE_KEYS.get(raw_type.lower())
+    rtype = lab[key] if key else raw_type
+    rtype = rtype[0].upper() + rtype[1:] if rtype else ""
+    series = safe_latex_to_text(entry.get("series", "")).strip()
+    number = safe_latex_to_text(entry.get("number", "")).strip()
+    if series:
+        paren = lab["report_no"].format(label=series, number=number) if number else series
+        return paren, rtype
+    if number:
+        if not rtype:
+            return number, ""
+        return lab["report_no"].format(label=rtype, number=number), ""
+    return "", rtype
+
 
 # biblatex-typnycklar i fältet `type` och vilken etikett de motsvarar.
 THESIS_TYPE_KEYS = {
@@ -908,6 +947,28 @@ def generate_apa(entry):
         body += f"{addon}."
         if pub:
             body += f" {pub}."
+    elif et in REPORT_TYPES:
+        paren, desc = _report_designation(entry)
+        body += f"*{title}*"
+        if paren:
+            body += f" ({paren})"
+        body += addon
+        if desc:
+            body += f" [{desc}]"
+        body += "."
+        inst = _unless_author(
+            safe_latex_to_text(entry.get("institution", "")).strip(), raw_author)
+        # Utgivaren: institution (biblatex fält för rapporter) och/eller
+        # publisher, utan dubbletter och inte om den är författaren.
+        names = []
+        for name in (inst, pub):
+            if name and name not in names:
+                names.append(name)
+        if names:
+            body += " " + ". ".join(names) + "."
+        # Sidantalet stod med före den egna rapportgrenen och får stå kvar.
+        if pp:
+            body += f" {_page_label(pp)} {pp}."
     elif et == "inproceedings":
         bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
         howp = safe_latex_to_text(entry.get("howpublished", "")).strip()

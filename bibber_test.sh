@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar, titleaddon,
+# Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar, titleaddon, rapporter,
 # flera nycklar (-k, --keys) och flera .bib-filer (-b).
 #
 # Användning: ./bibber_test.sh [sökväg/till/bibber.py]
@@ -590,7 +590,7 @@ check "redaktör = utgivare" "Skolverket (Red.). (2020). *Antologi*." "$out"
 out="$(run --lang sv -k KollKonf)"
 check "inproceedings utgivare = författare" "Skolverket. (2020). Bidrag. I *Konferens*." "$out"
 out="$(run --lang sv -k KollRapport)"
-check "övrig typ utgivare = författare" "Skolverket. (2020). Rapport." "$out"
+check "rapport: utgivare = författare, kursiv titel" "Skolverket. (2020). *Rapport*." "$out"
 out="$(run --lang sv -k KollPerson)"
 contains "person lika med utgivare: Efternamn, F." "Efternamn, F. (2020). *Bok*." "$out"
 
@@ -747,6 +747,41 @@ check "titleaddon: utropstecken, klamrar i fältet dubbleras inte" "Ek, A. (u.å
 check "titleaddon: bok, efter upplagan" "Basu, S. (2016). *History and civics* (2 uppl.) [Class 6]. Frank." "$(arun --lang sv -k BokUppl)"
 check "titleaddon: avhandling, före avhandlingsetiketten" "Ek, A. (2020). *Titel* [Translated title] [Doktorsavhandling, Uppsala universitet]." "$(arun --lang sv -k AvhOvers)"
 contains "titleaddon: kapitel" "Kapitel [Förord]. I B. Ek (Red.), *Bok*" "$(arun --lang sv -k KapAddon)"
+
+# --- Rapporter: *Titel* (Typ nummer). Utgivare. (Lunds APA 7-guide, Rapporter)
+cat > "$TMP/rapport.bib" <<'BIB'
+@report{TypNr, author = {{Skolinspektionen}}, title = {Vetenskaplig grund}, type = {Tematisk kvalitetsgranskning},
+  number = {400-2017:10221}, institution = {Skolinspektionen}, year = {2019}, url = {https://example.org/r}}
+@report{SerieNr, author = {Selander, Sven-Åke}, title = {Livstolkning}, series = {Rapporter om utbildning}, number = {3},
+  institution = {Lunds universitet}, year = {1994}}
+@techreport{Nyckel, author = {Ek, Anna}, title = {Mätning}, type = {resreport}, number = {12}, institution = {KAU}, year = {2020}}
+@techreport{BaraNr, author = {{Högskolan Dalarna}}, title = {Anvisningar}, number = {dnr C 2023/1464}, year = {2023}}
+@report{BaraTyp, author = {Ek, Anna}, title = {Granskning}, type = {intern rapport}, institution = {Karlstads universitet}, year = {2016}}
+@report{BaraSerie, author = {Ek, Anna}, title = {Kartläggning}, series = {Vetenskapsrådets rapporter}, publisher = {Vetenskapsrådet}, year = {2015}}
+@report{SerieTyp, author = {Ek, Anna}, title = {Utvärdering}, type = {Teknisk rapport}, series = {Serien}, number = {5}, year = {2020}}
+@report{Sidor, author = {Ek, Anna}, title = {Fallstudie}, institution = {Högskolan Väst}, pages = {152}, year = {2019}}
+@report{Beteckning, author = {{SOU 2019:64}}, title = {Nya regler för skolor med konfessionell inriktning}, year = {2019}}
+BIB
+rrun() { "$BIBBER" -b "$TMP/rapport.bib" "$@" 2>/dev/null; }
+check "rapport: typ och nummer, utgivare = författare" \
+    "Skolinspektionen. (2019). *Vetenskaplig grund* (Tematisk kvalitetsgranskning 400-2017:10221). https://example.org/r" \
+    "$(rrun --lang sv -k TypNr)"
+check "rapport en: No. före numret" \
+    "Skolinspektionen. (2019). *Vetenskaplig grund* (Tematisk kvalitetsgranskning No. 400-2017:10221). https://example.org/r" \
+    "$(rrun --lang en -k TypNr)"
+check "rapport: serie och nummer, institution som utgivare" \
+    "Selander, S.-Å. (1994). *Livstolkning* (Rapporter om utbildning 3). Lunds universitet." "$(rrun --lang sv -k SerieNr)"
+check "rapport: biblatex-typnyckel översätts (sv)" "Ek, A. (2020). *Mätning* (Forskningsrapport 12). KAU." "$(rrun --lang sv -k Nyckel)"
+check "rapport: biblatex-typnyckel översätts (en)" "Ek, A. (2020). *Mätning* (Research report No. 12). KAU." "$(rrun --lang en -k Nyckel)"
+check "rapport: nummer utan typ står ensamt" "Högskolan Dalarna. (2023). *Anvisningar* (dnr C 2023/1464)." "$(rrun --lang sv -k BaraNr)"
+check "rapport: typ utan nummer är en beskrivning" \
+    "Ek, A. (2016). *Granskning* [Intern rapport]. Karlstads universitet." "$(rrun --lang sv -k BaraTyp)"
+check "rapport: serie utan nummer i parentes" \
+    "Ek, A. (2015). *Kartläggning* (Vetenskapsrådets rapporter). Vetenskapsrådet." "$(rrun --lang sv -k BaraSerie)"
+check "rapport: serie och typ, numret hör till serien" "Ek, A. (2020). *Utvärdering* (Serien 5) [Teknisk rapport]." "$(rrun --lang sv -k SerieTyp)"
+check "rapport: sidantal står kvar" "Ek, A. (2019). *Fallstudie*. Högskolan Väst. s. 152." "$(rrun --lang sv -k Sidor)"
+check "rapport: offentligt tryck med beteckning som författare" \
+    "SOU 2019:64. (2019). *Nya regler för skolor med konfessionell inriktning*." "$(rrun --lang sv -k Beteckning)"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
