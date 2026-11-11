@@ -35,6 +35,7 @@ bibber -1 search terms          # best match
 bibber -n 5 search terms        # five best matches
 bibber search terms             # interactive search (TUI)
 bibber -f bib -k KEY            # the BibTeX entry instead of APA
+bibber -V                       # version (-v is --verbose)
 bibber --lang sv -k KEY         # language for this run only
 bibber --lang en -k KEY --no-translation   # original titles only
 bibber --lang en -k A B --no-translation-for A   # …for one entry
@@ -104,6 +105,14 @@ A few rules that go beyond the obvious:
 The APA manual has no rules for Swedish public documents. The Swedish forms
 follow the APA 7 guides of Lund University Library. They are named in the code
 comments next to each rule.
+
+## Version
+
+`bibber --version` prints `0.1.0` on a release, when HEAD carries the tag
+`v0.1.0`. On any other commit it prints `0.1.0+abc1234`, the release plus the
+short commit. git is asked only in bibber's own source tree, never in the
+current directory. An installed copy without `.git` reports its release. A
+source tree whose git does not answer reports `0.1.0+unknown`.
 
 ## Cache
 
