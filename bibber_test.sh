@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar, titleaddon, rapporter,
-# flera nycklar (-k, --keys), flera .bib-filer (-b) och standardfilen.
+# flera nycklar (-k, --keys), flera .bib-filer (-b), standardfilen och översatta titlar.
 #
 # Användning: ./bibber_test.sh [sökväg/till/bibber.py]
 # Tolken är repots venv (.venv/bin/python); BIBBER_PYTHON väljer en annan.
@@ -808,6 +808,56 @@ check "rapport: serie och typ, numret hör till serien" "Ek, A. (2020). *Utvärd
 check "rapport: sidantal står kvar" "Ek, A. (2019). *Fallstudie*. Högskolan Väst. s. 152." "$(rrun --lang sv -k Sidor)"
 check "rapport: offentligt tryck med beteckning som författare" \
     "SOU 2019:64. (2019). *Nya regler för skolor med konfessionell inriktning*." "$(rrun --lang sv -k Beteckning)"
+
+# --- Översatta titlar (title_translation_<språk>), alias i ids, --no-translation
+cat > "$TMP/tr.bib" <<'EOF'
+@article{TrArt2012, author = {Ek, Anna}, title = {Essentialism i skolan}, subtitle = {ett problem}, title_translation_en = {Essentialism in school: A problem}, journaltitle = {Tidskrift}, number = {2}, pages = {1--2}, year = {2012}, ids = {TrArt2012sv, TrArt2012eng}}
+@book{TrBok2010, author = {Berg, Hans}, title = {Religionsdidaktik}, subtitle = {Ein Leitfaden}, title_translation_sv = {Religionsdidaktik: En handledning}, title_translation_en = {[Religious didactics: A guide]}, edition = {2}, titleaddon = {Studienausgabe}, publisher = {Verlag}, year = {2010}}
+@legislation{TrLag, number = {1988:534}, title = {Djurskyddslag (1988:534)}, title_translation_en = {Swedish Animal Welfare Act}, version = {2019:66}, year = {1988}}
+@phdthesis{TrAvh2015, author = {Ek, Anna}, title = {Om skolan}, title_translation_en = {On school}, school = {Lärosäte}, year = {2015}}
+@incollection{TrKap2020, author = {Ek, Anna}, title = {Kapitlet}, title_translation_en = {The chapter}, booktitle = {Boken}, editor = {Berg, Hans}, pages = {3--4}, publisher = {Förlag}, year = {2020}}
+@book{TrKlam2001, author = {Ek, Anna}, title = {Boken}, title_translation_en = {[The] book [revised]}, titleaddon = {[Del 1] och [Del 2]}, year = {2001}}
+@report{TrRap2019, author = {Ek, Anna}, title = {Rapporten}, title_translation_en = {The report}, type = {Rapport}, number = {7}, institution = {Verket}, year = {2019}}
+EOF
+trun() { "$PY" "$BIBBER" -b "$TMP/tr.bib" "$@" 2>/dev/null; }
+check "översättning: artikel en, efter undertiteln" \
+    "Ek, A. (2012). Essentialism i skolan: Ett problem [Essentialism in school: A problem]. *Tidskrift*, (2), 1–2." "$(trun --lang en -k TrArt2012)"
+check "översättning: inget sv-fält, ingen hakparentes" \
+    "Ek, A. (2012). Essentialism i skolan: Ett problem. *Tidskrift*, (2), 1–2." "$(trun --lang sv -k TrArt2012)"
+check "översättning: bok, före upplaga och titleaddon, utanför kursiven" \
+    "Berg, H. (2010). *Religionsdidaktik: Ein Leitfaden* [Religionsdidaktik: En handledning] (2 uppl.) [Studienausgabe]. Verlag." "$(trun --lang sv -k TrBok2010)"
+check "översättning: klamrar i fältet dubbleras inte" \
+    "Berg, H. (2010). *Religionsdidaktik: Ein Leitfaden* [Religious didactics: A guide] (2nd ed.) [Studienausgabe]. Verlag." "$(trun --lang en -k TrBok2010)"
+check "översättning: lag, före lydelsen" \
+    "SFS 1988:534. *Djurskyddslag* [Swedish Animal Welfare Act] [amended up to and including SFS 2019:66]." "$(trun --lang en -k TrLag)"
+check "översättning: avhandling, före avhandlingsetiketten" \
+    "Ek, A. (2015). *Om skolan* [On school] [Doctoral dissertation, Lärosäte]." "$(trun --lang en -k TrAvh2015)"
+check "översättning: kapitel, boktiteln översätts inte" \
+    "Ek, A. (2020). Kapitlet [The chapter]. In H. Berg (Ed.), *Boken* (pp. 3–4). Förlag." "$(trun --lang en -k TrKap2020)"
+check "översättning: rapport, före rapportbeteckningen" \
+    "Ek, A. (2019). *Rapporten* [The report] (Rapport No. 7). Verket." "$(trun --lang en -k TrRap2019)"
+check "alias i ids ger posten" "$(trun --lang en -k TrArt2012)" "$(trun --lang en -k TrArt2012eng)"
+check "alias i ids, skiftlägesokänsligt" "$(trun --lang en -k TrArt2012)" "$(trun --lang en -k trart2012SV)"
+check "--no-translation-for KEY: bara den nyckeln" \
+    "$(printf '%s\n\n%s' "Ek, A. (2012). Essentialism i skolan: Ett problem. *Tidskrift*, (2), 1–2." "Berg, H. (2010). *Religionsdidaktik: Ein Leitfaden* [Religious didactics: A guide] (2nd ed.) [Studienausgabe]. Verlag.")" \
+    "$(trun --lang en -k TrArt2012 TrBok2010 --no-translation-for TrArt2012)"
+check "--no-translation: alla" \
+    "SFS 1988:534. *Djurskyddslag* [amended up to and including SFS 2019:66]." "$(trun --lang en -k TrLag --no-translation)"
+check "--no-translation-for med alias" \
+    "Ek, A. (2012). Essentialism i skolan: Ett problem. *Tidskrift*, (2), 1–2." "$(trun --lang en -k TrArt2012 --no-translation-for TrArt2012eng)"
+
+# Flaggan sväljer inga argument: söktermer, en positionell .bib och -k efter den.
+check "--no-translation före -k" \
+    "SFS 1988:534. *Djurskyddslag* [amended up to and including SFS 2019:66]." "$(trun --lang en --no-translation -k TrLag)"
+out="$("$PY" "$BIBBER" --lang en -b "$TMP/tr.bib" --no-translation Essentialism -n1 2>/dev/null)"
+contains "--no-translation före sökterm" "Essentialism i skolan: Ett problem. *Tidskrift*" "$out"
+out="$("$PY" "$BIBBER" --lang en -n1 --no-translation "$TMP/tr.bib" Essentialism 2>/dev/null)"
+contains "--no-translation före positionell .bib" "Essentialism i skolan: Ett problem. *Tidskrift*" "$out"
+check "--no-translation-for upprepas" \
+    "$(printf '%s\n\n%s' "Ek, A. (2012). Essentialism i skolan: Ett problem. *Tidskrift*, (2), 1–2." "SFS 1988:534. *Djurskyddslag* [amended up to and including SFS 2019:66].")" \
+    "$(trun --lang en --no-translation-for TrArt2012 -k TrArt2012 TrLag --no-translation-for TrLag)"
+check "klamrar: bara ett omslutande par tas bort (översättning och titleaddon)" \
+    "Ek, A. (2001). *Boken* [[The] book [revised]] [[Del 1] och [Del 2]]." "$(trun --lang en -k TrKlam2001)"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

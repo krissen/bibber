@@ -200,6 +200,10 @@ text_area = None
 
 
 LANGUAGE = "en"
+# Översatta titlar som inte ska skrivas ut: alla (--no-translation utan
+# nycklar) eller bara dessa nycklar, i gemener.
+NO_TRANSLATION_ALL = False
+NO_TRANSLATION_KEYS = set()
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
 CACHE_KEEP = 5  # antal cachefiler (bib-kombinationer/versioner) som sparas
 CACHE_VERSION = "4"  # Bump vid ändringar i cache-format (3: sökindex, 4: crossref-arv)
@@ -237,6 +241,14 @@ Interaktiva kommandon:
     parser.add_argument("--lang", choices=["sv", "en"],
                         help="Språk för den här körningen (sparas inte; "
                              "interaktiva 'lang' sparar)")
+    # Två flaggor i stället för en med nargs="*": en sådan sväljer söktermer och
+    # en positionell .bib-fil som står efter den, och "--no-translation fil.bib"
+    # renderade då tyst ur standardbiblioteket.
+    parser.add_argument("--no-translation", action="store_true",
+                        help="Skriv inte ut översatta titlar (title_translation_<språk>)")
+    parser.add_argument("--no-translation-for", action="append", metavar="KEY",
+                        help="Skriv inte ut översättningen för den här posten "
+                             "(nyckel eller alias i ids); kan upprepas")
     parser.add_argument("-1", "--one", action="store_true",
                         help="Icke-interaktivt: ge första träffen och avsluta (genväg för -n1)")
     parser.add_argument("-n", "--num", type=int, metavar="N",
@@ -586,14 +598,54 @@ def _join_title(main, sub):
     return _cap_after_colon(main)
 
 
+def _unbracket(raw):
+    """Tar bort hakparenteser som omsluter HELA värdet, så att de inte
+    dubbleras när bibber sätter egna: '[Recension]' blir 'Recension', men
+    '[A] och [B]' lämnas orört (de yttre klamrarna hör inte ihop)."""
+    if not (raw.startswith("[") and raw.endswith("]")):
+        return raw
+    depth = 0
+    for i, ch in enumerate(raw):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0 and i < len(raw) - 1:
+                return raw
+    return raw[1:-1].strip()
+
+
 def _titleaddon(entry):
     """`titleaddon` som APA-beskrivning i hakparentes direkt efter titeln:
     'Smältdegel och mångkultur? [Recension av …].' (Purdue OWL, APA 7 Review).
     Beskrivningen hör till titelelementet, så punkten står efter hakparentesen,
     också när titeln slutar på ? eller !. Klamrar som redan står i fältet tas
     bort, så att de inte dubbleras."""
-    raw = safe_latex_to_text(entry.get("titleaddon", "")).strip()
-    raw = raw[1:-1].strip() if raw.startswith("[") and raw.endswith("]") else raw
+    raw = _unbracket(safe_latex_to_text(entry.get("titleaddon", "")).strip())
+    return f" [{raw}]" if raw else ""
+
+
+def _translation(entry, key=None):
+    """Översättningen av titeln till målspråket, i hakparentes direkt efter
+    originaltiteln: 'Essentialism i religionsundervisningen [Essentialism in
+    teaching religion]'. Fältet title_translation_<språk> bär hela den översatta
+    titeln (titel och undertitel); syntaxen är biblatex-ms (Kime2023biblatexms40,
+    s. 161). Målspråket är utskriftens språk (--lang): APA 7 översätter titeln
+    till den citerande textens språk, och titlar på engelska, danska och norska
+    översätts inte i svensk text (LUB2026apa7otherlang, LUB2026apa7annatsprak).
+    Det senare följer av datat: posten har då inget sv-fält. Hakparentesen är
+    inte kursiv, också när originaltiteln är det (biblatex-apa skriver origtitle
+    och sedan title i hakparentes, apa.bbx rad 771-792). Samma modell som
+    krissen_translation.sty i krissen-tex."""
+    if NO_TRANSLATION_ALL:
+        return ""
+    # Undantaget gäller posten, oavsett om den anges med nyckel eller alias (ids).
+    names = {a.strip().lower() for a in entry.get("ids", "").split(",") if a.strip()}
+    if key:
+        names.add(key.lower())
+    if names & NO_TRANSLATION_KEYS:
+        return ""
+    raw = _unbracket(safe_latex_to_text(entry.get(f"title_translation_{LANGUAGE}", "")).strip())
     return f" [{raw}]" if raw else ""
 
 
@@ -837,7 +889,7 @@ def _legislation_parts(entry):
     return designation, title, version
 
 
-def generate_apa(entry):
+def generate_apa(entry, key=None):
     """
     APA 7-formatering (svenska eller engelska efter LANGUAGE).
       - Upp till 20 författare/redaktörer, därefter '...' och sista namnet.
@@ -849,11 +901,12 @@ def generate_apa(entry):
       - Avhandling: *Titel* [Doktorsavhandling, Lärosäte]. Fältet `type` styr etiketten.
       - Utgivningsort utelämnas (APA 7), liksom utgivare som är samma som författaren.
       - Författning (@legislation): SFS 2010:800. *Skollag* [ändrad t.o.m. SFS …]. URL
+      - title_translation_<språk> för utskriftens språk i hakparentes direkt efter titeln.
       - DOI som https://doi.org/…, annars URL, sist.
     """
     if DEBUG_MODE:
-        for key, val in entry.items():
-            print(f"[DEBUG] {key} : {val}")
+        for fname, val in entry.items():
+            print(f"[DEBUG] {fname} : {val}")
     lab = _labels()
 
     # 1) Författare, eller redaktörer om författare saknas
@@ -874,6 +927,7 @@ def generate_apa(entry):
     # 3) Titel
     title = _join_title(entry.get("title", ""), entry.get("subtitle", "")) or "Untitled"
     addon = _titleaddon(entry)
+    tr = _translation(entry, key)
 
     pp = _pages(entry.get("pages", ""))
     edition = _edition(entry.get("edition", ""))
@@ -901,7 +955,7 @@ def generate_apa(entry):
     if et in LEGISLATION_TYPES:
         designation, ltitle, version = _legislation_parts(entry)
         body = f"{designation}. " if designation else ""
-        body += f"*{ltitle or title}*{addon}"
+        body += f"*{ltitle or title}*{tr}{addon}"
         if version:
             body += " [" + lab["amended"].format(version=version) + "]"
         body = _tidy(body + "." + note_str)
@@ -921,16 +975,16 @@ def generate_apa(entry):
         inst = _thesis_institution(entry)
         bracket = ", ".join(x for x in (label, inst) if x)
         if bracket:
-            body += f"*{title}*{addon} [{bracket}]."
+            body += f"*{title}*{tr}{addon} [{bracket}]."
         else:
-            body += f"*{title}*{addon}."
+            body += f"*{title}*{tr}{addon}."
         out = _tidy(body + note_str)
         return f"{out} {link}" if link else out
 
     if et in ("incollection", "inbook"):
         raw_ed = entry.get("editor", "")
         bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
-        body += f"{title}{addon}. "
+        body += f"{title}{tr}{addon}. "
         if bk:
             body += f"{lab['in']} "
             if raw_ed and raw_ed != raw_author:
@@ -947,7 +1001,7 @@ def generate_apa(entry):
         if pub:
             body += f" {pub}."
     elif et == "article":
-        body += f"{title}{addon}. "
+        body += f"{title}{tr}{addon}. "
         j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
         vol = entry.get("volume", "").strip()
         num = entry.get("number", "").strip() or entry.get("issue", "").strip()
@@ -965,7 +1019,7 @@ def generate_apa(entry):
         elif pp:
             body += f"{pp}."
     elif et == "book":
-        body += f"*{title}*"
+        body += f"*{title}*{tr}"
         if edition:
             body += f" ({edition})"
         body += f"{addon}."
@@ -973,7 +1027,7 @@ def generate_apa(entry):
             body += f" {pub}."
     elif et in REPORT_TYPES:
         paren, desc = _report_designation(entry)
-        body += f"*{title}*"
+        body += f"*{title}*{tr}"
         if paren:
             body += f" ({paren})"
         body += addon
@@ -996,7 +1050,7 @@ def generate_apa(entry):
     elif et == "inproceedings":
         bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
         howp = safe_latex_to_text(entry.get("howpublished", "")).strip()
-        body += f"{title}{addon}."
+        body += f"{title}{tr}{addon}."
         if bk:
             body += f" {lab['in']} *{bk}*"
             if pp:
@@ -1007,7 +1061,7 @@ def generate_apa(entry):
         if pub:
             body += f" {pub}."
     elif et in ("misc", "online", "electronic", "www"):
-        body += f"*{title}*{addon}."
+        body += f"*{title}*{tr}{addon}."
         inst = _unless_author(
             safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip(),
             raw_author)
@@ -1021,7 +1075,7 @@ def generate_apa(entry):
         if pp:
             body += f" {_page_label(pp)} {pp}."
     else:
-        body += f"{title}{addon}."
+        body += f"{title}{tr}{addon}."
         if pub:
             body += f" {pub}."
         if pp:
@@ -1092,7 +1146,7 @@ def get_output(key, entry, output_format):
     if output_format == "bib":
         return generate_bib_entry(key, entry)
     else:
-        return generate_apa(entry)
+        return generate_apa(entry, key)
 
 
 def get_reference_by_key(citation_key, output_format="apa"):
@@ -1113,6 +1167,14 @@ def get_reference_by_key(citation_key, output_format="apa"):
     key_lower = citation_key.lower()
     for key, entry in bib_data.items():
         if key.lower() == key_lower:
+            return get_output(key, entry, output_format)
+
+    # Alias i fältet ids (biblatex: "An entry may be cited by any of its
+    # aliases", Kime2024biblatex320 s. 30). Så fortsätter en gammal nyckel,
+    # t.ex. en sammanslagen språkdubblett, att fungera.
+    for key, entry in bib_data.items():
+        aliases = [a.strip().lower() for a in entry.get("ids", "").split(",")]
+        if key_lower in aliases:
             return get_output(key, entry, output_format)
 
     return None
@@ -1817,7 +1879,7 @@ def _do_copy(index):
     bib_entry = bib_data[key]
 
     # Skicka bibposten till generate_apa:
-    apa = generate_apa(bib_entry)
+    apa = generate_apa(bib_entry, key)
 
     # Output till användaren
     print(f"\n{apa}\n")
@@ -2048,7 +2110,7 @@ def interactive_result_view_compact(results, query_terms):
             keys = list(bib_data.keys())
             key = keys[actual_idx]
             e = bib_data[key]
-            apa = generate_apa(e)
+            apa = generate_apa(e, key)
             copy_to_clipboard(apa)
             show_popup_dialog(apa, floats, body_window)
 
@@ -2252,7 +2314,7 @@ def show_popup(title_text, body_text):
 # 9) main
 # -------------------------------------------------
 def main():
-    global LANGUAGE, DEBUG_MODE, VERBOSE_MODE
+    global LANGUAGE, DEBUG_MODE, VERBOSE_MODE, NO_TRANSLATION_ALL
     load_language_setting()
     args = parse_args()
     if args.lang:
@@ -2291,6 +2353,10 @@ def main():
                 print("The key file contained no keys.", file=sys.stderr)
             sys.exit(1)
     args.key = keys or None
+
+    # Översatta titlar: --no-translation stänger av alla, --no-translation-for en post.
+    NO_TRANSLATION_ALL = args.no_translation
+    NO_TRANSLATION_KEYS.update(k.lower() for k in args.no_translation_for or [])
 
     # Sätt globala flaggor
     DEBUG_MODE = args.debug
