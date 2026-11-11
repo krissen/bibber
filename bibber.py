@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 
 import bibtexparser
@@ -211,6 +212,72 @@ CACHE_VERSION = "4"  # Bump vid ändringar i cache-format (3: sökindex, 4: cros
 # -------------------------------------------------
 # Argument-parsning
 # -------------------------------------------------
+def _release_version(root):
+    """Versionen i pyproject.toml bredvid källfilen, annars den installerade
+    paketversionen. Källträdet går först: en checkout som körs direkt ska ange
+    sin egen version, inte den som råkar vara installerad i miljön."""
+    try:
+        with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as f:
+            in_project = False
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("["):
+                    in_project = stripped == "[project]"
+                elif in_project:
+                    m = re.match(r'version\s*=\s*"([^"]+)"', stripped)
+                    if m:
+                        return m.group(1)
+    except OSError:
+        pass
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            return version("bibber")
+        except PackageNotFoundError:
+            return ""
+    except ImportError:
+        return ""
+
+
+def _git(root, *args):
+    try:
+        out = subprocess.run(["git", "-C", root, *args], capture_output=True,
+                             text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def version_string():
+    """'0.1.0' när HEAD bär taggen v0.1.0, annars '0.1.0+abc1234'; samma regel
+    som bifrost (R/utils_version.R). Git frågas bara i bibbers eget källträd,
+    aldrig i arbetskatalogen: där kan en annan checkout ge sin SHA till en
+    sträng som påstår sig beskriva bibber. Utan .git (installerat paket) är
+    versionen den släppta; med .git men utan svar från git blir den
+    '+unknown', så att ett utvecklingsträd aldrig ser ut som en release."""
+    root = os.path.dirname(os.path.realpath(__file__))
+    release = _release_version(root) or "0.0.0"
+    # I en worktree är .git en fil med en gitdir-pekare, inte en katalog.
+    if not os.path.exists(os.path.join(root, ".git")):
+        return release
+    sha = _git(root, "rev-parse", "--short=7", "HEAD")
+    if not sha:
+        return f"{release}+unknown"
+    tags = (_git(root, "tag", "--points-at", "HEAD") or "").split()
+    return release if f"v{release}" in tags else f"{release}+{sha}"
+
+
+class _VersionAction(argparse.Action):
+    """--version räknar fram strängen först när flaggan används, så att git
+    inte anropas vid varje körning."""
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        print(f"bibber {version_string()}")
+        parser.exit()
+
+
 def parse_args():
     """Parsar kommandoradsargument med argparse."""
     parser = argparse.ArgumentParser(
@@ -253,6 +320,9 @@ Interaktiva kommandon:
                         help="Icke-interaktivt: ge första träffen och avsluta (genväg för -n1)")
     parser.add_argument("-n", "--num", type=int, metavar="N",
                         help="Icke-interaktivt: visa N bästa träffar och avsluta")
+    parser.add_argument("-V", "--version", action=_VersionAction,
+                        help="Visa version och avsluta (x.y.z på en release, "
+                             "x.y.z+commit annars)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Visa extra information (t.ex. 'Laddar fil...')")
     parser.add_argument("-d", "--debug", action="store_true",
