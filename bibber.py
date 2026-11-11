@@ -241,9 +241,14 @@ Interaktiva kommandon:
     parser.add_argument("--lang", choices=["sv", "en"],
                         help="Språk för den här körningen (sparas inte; "
                              "interaktiva 'lang' sparar)")
-    parser.add_argument("--no-translation", nargs="*", action="extend", metavar="KEY",
-                        help="Skriv inte ut översatta titlar (title_translation_<språk>): "
-                             "för dessa nycklar, eller för alla utan nycklar")
+    # Två flaggor i stället för en med nargs="*": en sådan sväljer söktermer och
+    # en positionell .bib-fil som står efter den, och "--no-translation fil.bib"
+    # renderade då tyst ur standardbiblioteket.
+    parser.add_argument("--no-translation", action="store_true",
+                        help="Skriv inte ut översatta titlar (title_translation_<språk>)")
+    parser.add_argument("--no-translation-for", action="append", metavar="KEY",
+                        help="Skriv inte ut översättningen för den här posten "
+                             "(nyckel eller alias i ids); kan upprepas")
     parser.add_argument("-1", "--one", action="store_true",
                         help="Icke-interaktivt: ge första träffen och avsluta (genväg för -n1)")
     parser.add_argument("-n", "--num", type=int, metavar="N",
@@ -2349,12 +2354,9 @@ def main():
             sys.exit(1)
     args.key = keys or None
 
-    # Översatta titlar: --no-translation utan nycklar stänger av alla.
-    if args.no_translation is not None:
-        if args.no_translation:
-            NO_TRANSLATION_KEYS.update(k.lower() for k in args.no_translation)
-        else:
-            NO_TRANSLATION_ALL = True
+    # Översatta titlar: --no-translation stänger av alla, --no-translation-for en post.
+    NO_TRANSLATION_ALL = args.no_translation
+    NO_TRANSLATION_KEYS.update(k.lower() for k in args.no_translation_for or [])
 
     # Sätt globala flaggor
     DEBUG_MODE = args.debug
