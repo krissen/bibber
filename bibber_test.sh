@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
 # Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar, titleaddon, rapporter,
-# flera nycklar (-k, --keys) och flera .bib-filer (-b).
+# flera nycklar (-k, --keys), flera .bib-filer (-b) och standardfilen.
 #
 # Användning: ./bibber_test.sh [sökväg/till/bibber.py]
+# Tolken är repots venv (.venv/bin/python); BIBBER_PYTHON väljer en annan.
 # Tillstånd isoleras: BIBBER_CACHE_DIR pekar på en mktemp-katalog, så
 # cache, lang.json och last_used_bibfile.json i ~/.cache/bibber rörs inte.
 set -u
 
-BIBBER="${1:-$(cd "$(dirname "$0")" && pwd)/bibber.py}"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+BIBBER="${1:-$ROOT/bibber.py}"
+PY="${BIBBER_PYTHON:-$ROOT/.venv/bin/python}"
+if [ ! -x "$PY" ]; then
+    echo "Hittar ingen Python-tolk: $PY (skapa venv: python3 -m venv .venv && .venv/bin/pip install -e .)" >&2
+    exit 2
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export BIBBER_CACHE_DIR="$TMP/cache"
 mkdir -p "$BIBBER_CACHE_DIR"
+# Standardfilen får inte komma från användarens miljö eller config.
+unset BIBBER_BIB
+export XDG_CONFIG_HOME="$TMP/config"
 
 PASS=0
 FAIL=0
@@ -359,7 +369,7 @@ cat > "$TMP/lokal.bib" <<'EOF'
 }
 EOF
 
-run() { "$BIBBER" -b "$TMP/main.bib" "$@" 2>/dev/null; }
+run() { "$PY" "$BIBBER" -b "$TMP/main.bib" "$@" 2>/dev/null; }
 
 # --- Kapitel med crossref: arv, ort bort, redaktörer förnamn först, tankstreck
 out="$(run --lang sv -k Kap2007)"
@@ -480,7 +490,7 @@ out="$(run --lang sv -k Org2025 -k Utanvol2018)"
 check "upprepad -k samlas i ordning" "$expected" "$out"
 
 # --- Saknad nyckel: övriga skrivs, exit 1, varning på stderr
-"$BIBBER" -b "$TMP/main.bib" --lang sv -k Org2025 Finnsinte >"$TMP/o" 2>"$TMP/e"
+"$PY" "$BIBBER" -b "$TMP/main.bib" --lang sv -k Org2025 Finnsinte >"$TMP/o" 2>"$TMP/e"
 rc=$?
 check "saknad nyckel exit" "1" "$rc"
 check "saknad nyckel stdout" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$(cat "$TMP/o")"
@@ -493,39 +503,50 @@ expected="$(printf '%s\n\n%s' \
     "Niemi, K. (2018). Religionsvetenskapliga tröskelbegrepp. *Nordidactica*, (2), 1–22." \
     "Skolverket. (2025). *Ämnesplan i religionskunskap*.")"
 check "--keys fil" "$expected" "$out"
-out="$(printf 'Org2025\n' | "$BIBBER" -b "$TMP/main.bib" --lang sv --keys - 2>/dev/null)"
+out="$(printf 'Org2025\n' | "$PY" "$BIBBER" -b "$TMP/main.bib" --lang sv --keys - 2>/dev/null)"
 check "--keys stdin" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$out"
 
 # --- Flera -b: första filen vinner, crossref över filgränsen
-out="$("$BIBBER" -b "$TMP/lokal.bib" -b "$TMP/main.bib" --lang sv -k Delad2000 2>/dev/null)"
+out="$("$PY" "$BIBBER" -b "$TMP/lokal.bib" -b "$TMP/main.bib" --lang sv -k Delad2000 2>/dev/null)"
 contains "lokal fil vinner" "Från lokala filen" "$out"
-out="$("$BIBBER" -b "$TMP/main.bib" -b "$TMP/lokal.bib" --lang sv -k Delad2000 2>/dev/null)"
+out="$("$PY" "$BIBBER" -b "$TMP/main.bib" -b "$TMP/lokal.bib" --lang sv -k Delad2000 2>/dev/null)"
 contains "ordningen styr" "Från huvudfilen" "$out"
-out="$("$BIBBER" -b "$TMP/lokal.bib" -b "$TMP/main.bib" --lang sv -k LokalKap 2>/dev/null)"
+out="$("$PY" "$BIBBER" -b "$TMP/lokal.bib" -b "$TMP/main.bib" --lang sv -k LokalKap 2>/dev/null)"
 contains "crossref över filer" "I C. Bakker & H.-G. Heimbrock (Red.), *Researching RE teachers: RE teachers as researchers* (s. 1–2). Waxmann." "$out"
 
 # --- Positionell .bib-fil efter -k sväljs inte som nyckel
-out="$("$BIBBER" --lang sv -k Org2025 "$TMP/main.bib" 2>/dev/null)"
+out="$("$PY" "$BIBBER" --lang sv -k Org2025 "$TMP/main.bib" 2>/dev/null)"
 check "-k KEY fil.bib" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$out"
 
 # --- Sökning -n1 ger APA-referens
 out="$(run --lang sv -n1 Toleransens altare)"
 contains "-n1 sökning" "*Toleransens altare* [Doktorsavhandling, Södertörn University]." "$out"
 
+# --- Standardfilen utan -b: $BIBBER_BIB, sedan $XDG_CONFIG_HOME/bibber/default_bib
+out="$(BIBBER_BIB="$TMP/lokal.bib" "$PY" "$BIBBER" --lang sv -k Delad2000 2>/dev/null)"
+contains "standardfil: BIBBER_BIB" "Från lokala filen" "$out"
+mkdir -p "$XDG_CONFIG_HOME/bibber"
+printf '# kommentar\n\n%s\n' "$TMP/main.bib" > "$XDG_CONFIG_HOME/bibber/default_bib"
+out="$("$PY" "$BIBBER" --lang sv -k Delad2000 2>/dev/null)"
+contains "standardfil: config, kommentar och tom rad hoppas över" "Från huvudfilen" "$out"
+out="$(BIBBER_BIB="$TMP/lokal.bib" "$PY" "$BIBBER" --lang sv -k Delad2000 2>/dev/null)"
+contains "standardfil: BIBBER_BIB före config" "Från lokala filen" "$out"
+rm "$XDG_CONFIG_HOME/bibber/default_bib"
+
 # --- Cachen följer skriptet: en ändrad kopia av bibber.py läser inte den gamla cachen
 # (egen cachekatalog, så att gallringen inte påverkar räkningen)
 mkdir -p "$TMP/cache-script"
 cp "$BIBBER" "$TMP/bibber_copy.py"
-BIBBER_CACHE_DIR="$TMP/cache-script" "$TMP/bibber_copy.py" -b "$TMP/main.bib" -k Org2025 >/dev/null 2>&1
+BIBBER_CACHE_DIR="$TMP/cache-script" "$PY" "$TMP/bibber_copy.py" -b "$TMP/main.bib" -k Org2025 >/dev/null 2>&1
 printf '\n# ändrad\n' >> "$TMP/bibber_copy.py"
-BIBBER_CACHE_DIR="$TMP/cache-script" "$TMP/bibber_copy.py" -b "$TMP/main.bib" -k Org2025 >/dev/null 2>&1
+BIBBER_CACHE_DIR="$TMP/cache-script" "$PY" "$TMP/bibber_copy.py" -b "$TMP/main.bib" -k Org2025 >/dev/null 2>&1
 n="$(ls "$TMP/cache-script" | grep -cE '^[0-9a-f]{32}\.json$')"
 check "ny cache när skriptet ändras" "2" "$n"
 
 # --- Gallring: högst fem cachefiler, lang/last_used står kvar
 for i in 1 2 3 4 5 6 7; do
     printf '@book{G%s, title = {T}, year = {2000}}\n' "$i" > "$TMP/g$i.bib"
-    "$BIBBER" -b "$TMP/g$i.bib" -k "G$i" >/dev/null 2>&1
+    "$PY" "$BIBBER" -b "$TMP/g$i.bib" -k "G$i" >/dev/null 2>&1
 done
 n="$(ls "$BIBBER_CACHE_DIR" | grep -cE '^[0-9a-f]{32}\.json$')"
 check "cache gallras till fem" "5" "$n"
@@ -597,7 +618,7 @@ out="$(run --lang sv -k KollPerson)"
 contains "person lika med utgivare: Efternamn, F." "Efternamn, F. (2020). *Bok*." "$out"
 
 # --- Listvyns kortform använder samma namnuppdelning (ingen CLI-väg utan TUI)
-out="$("$(head -1 "$BIBBER" | cut -c3-)" - "$BIBBER" <<'PY'
+out="$("$PY" - "$BIBBER" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("bibber", sys.argv[1])
 spec = importlib.util.spec_from_loader("bibber", loader)
@@ -660,7 +681,7 @@ cat > "$TMP/period.bib" <<'EOF2'
   crossref = {Nr2016}
 }
 EOF2
-prun() { "$BIBBER" -b "$TMP/period.bib" -b "$TMP/main.bib" "$@" 2>/dev/null; }
+prun() { "$PY" "$BIBBER" -b "$TMP/period.bib" -b "$TMP/main.bib" "$@" 2>/dev/null; }
 out="$(prun --lang sv -k BidragA2016)"
 check "artikel i periodical sv" \
     "Öberg, Å. (2016). Räkna på lärare. *Tidskrift för läraryrket*, *5*(2), 12–34." \
@@ -711,8 +732,7 @@ cat > "$TMP/lag.bib" <<'BIB'
 @legislation{SerieVersion, number = {2011:144}, series = {SKOLFS}, title = {Föreskrift},
   version = {2020:5}, note = {Anm}}
 BIB
-lrun() { "$BIBBER" -b "$TMP/lag.bib" "$@" 2>/dev/null; }
-PY="$(head -1 "$BIBBER" | /usr/bin/sed "s/^#!//")"  # samma tolk som bibber.py; ord-delas avsiktligt (env-shebang)
+lrun() { "$PY" "$BIBBER" -b "$TMP/lag.bib" "$@" 2>/dev/null; }
 check "lag sv: beteckning, kursiv titel, lydelse, url" \
     "SFS 2010:800. *Skollag* [ändrad t.o.m. SFS 2026:1636]. https://www.riksdagen.se/sv/dokument-och-lagar/dokument/svensk-forfattningssamling/skollag-2010800_sfs-2010-800/" \
     "$(lrun --lang sv -k Skollag)"
@@ -728,7 +748,7 @@ check "lag: utan nummer står författaren som beteckning" "Riksdagen. *Utan num
 check "lag: version tar series-prefixet, note efter" \
     "SKOLFS 2011:144. *Föreskrift* [ändrad t.o.m. SKOLFS 2020:5]. [Anm]" "$(lrun --lang sv -k SerieVersion)"
 check "lag: kort form" "SFS 1993:100. Högskoleförordning" \
-    "$($PY -c 'import sys; sys.path.insert(0, sys.argv[1]); import bibber; print(bibber.build_standard_reference_short({"entrytype": "legislation", "number": "1993:100", "title": "Högskoleförordning (1993:100)"}))' "$(dirname "$BIBBER")" 2>&1)"
+    "$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import bibber; print(bibber.build_standard_reference_short({"entrytype": "legislation", "number": "1993:100", "title": "Högskoleförordning (1993:100)"}))' "$(dirname "$BIBBER")" 2>&1)"
 
 # --- titleaddon: APA-beskrivning i hakparentes efter titeln (Purdue OWL, Review)
 cat > "$TMP/addon.bib" <<'BIB'
@@ -740,7 +760,7 @@ cat > "$TMP/addon.bib" <<'BIB'
 @phdthesis{AvhOvers, author = {Ek, Anna}, title = {Titel}, school = {Uppsala universitet}, year = {2020}, titleaddon = {Translated title}}
 @incollection{KapAddon, author = {Ek, Anna}, title = {Kapitel}, booktitle = {Bok}, editor = {Ek, Bo}, pages = {1-2}, year = {2020}, titleaddon = {Förord}}
 BIB
-arun() { "$BIBBER" -b "$TMP/addon.bib" "$@" 2>/dev/null; }
+arun() { "$PY" "$BIBBER" -b "$TMP/addon.bib" "$@" 2>/dev/null; }
 check "titleaddon: recension, frågetecken står kvar, punkt efter hakparentes" \
     "Björlin, O. (2026). Smältdegel och mångkultur? [Recension av Simon Sorgenfrei, »Öppna era hjärtan«, Norstedts 2026]. *Religion & Livsfrågor*, *58*(3), 14." \
     "$(arun --lang sv -k Recension)"
@@ -764,7 +784,7 @@ cat > "$TMP/rapport.bib" <<'BIB'
 @report{Sidor, author = {Ek, Anna}, title = {Fallstudie}, institution = {Högskolan Väst}, pages = {152}, year = {2019}}
 @report{Beteckning, author = {{SOU 2019:64}}, title = {Nya regler för skolor med konfessionell inriktning}, year = {2019}}
 BIB
-rrun() { "$BIBBER" -b "$TMP/rapport.bib" "$@" 2>/dev/null; }
+rrun() { "$PY" "$BIBBER" -b "$TMP/rapport.bib" "$@" 2>/dev/null; }
 check "rapport: typ och nummer, utgivare = författare" \
     "Skolinspektionen. (2019). *Vetenskaplig grund* (Tematisk kvalitetsgranskning 400-2017:10221). https://example.org/r" \
     "$(rrun --lang sv -k TypNr)"
