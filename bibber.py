@@ -262,8 +262,9 @@ def save_last_used_file(file_path):
         json.dump({"last_used": file_path}, f)
 
 def default_bib_file():
-    """Standardfilen när -b saknas: $BIBBER_BIB, annars första raden i
-    $XDG_CONFIG_HOME/bibber/default_bib (~/.config/bibber/default_bib).
+    """Standardfilen när -b saknas: $BIBBER_BIB, annars första raden som inte
+    är tom eller en #-kommentar i $XDG_CONFIG_HOME/bibber/default_bib
+    (~/.config/bibber/default_bib).
     Finns ingen av dem används den senast använda filen. Sökvägen låg förut
     hårdkodad i koden, vilket band verktyget till en enda användares bibliotek."""
     env = os.environ.get("BIBBER_BIB", "").strip()
@@ -2311,6 +2312,14 @@ def main():
         if os.path.isfile(DEFAULT_BIB):
             bib_file = DEFAULT_BIB
         else:
+            # En angiven standardfil som saknas är ett konfigurationsfel; utan
+            # varning skulle den senast använda filen, kanske ett annat
+            # bibliotek, tyst ta dess plats.
+            if DEFAULT_BIB:
+                if LANGUAGE == "sv":
+                    print(f"Standardfilen finns inte: {DEFAULT_BIB}", file=sys.stderr)
+                else:
+                    print(f"Default file not found: {DEFAULT_BIB}", file=sys.stderr)
             bf = get_last_used_file()
             if bf:
                 bib_file = bf
