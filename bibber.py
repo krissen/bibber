@@ -523,6 +523,17 @@ def _join_title(main, sub):
     return _cap_after_colon(main)
 
 
+def _titleaddon(entry):
+    """`titleaddon` som APA-beskrivning i hakparentes direkt efter titeln:
+    'Smältdegel och mångkultur? [Recension av …].' (Purdue OWL, APA 7 Review).
+    Beskrivningen hör till titelelementet, så punkten står efter hakparentesen,
+    också när titeln slutar på ? eller !. Klamrar som redan står i fältet tas
+    bort, så att de inte dubbleras."""
+    raw = safe_latex_to_text(entry.get("titleaddon", "")).strip()
+    raw = raw[1:-1].strip() if raw.startswith("[") and raw.endswith("]") else raw
+    return f" [{raw}]" if raw else ""
+
+
 def _pages(raw):
     """Sidintervall med tankstreck (APA): 75-93 och 75--93 blir 75–93."""
     pp = (raw or "").replace("---", "–").replace("--", "–").strip()
@@ -768,7 +779,8 @@ def generate_apa(entry):
     APA 7-formatering (svenska eller engelska efter LANGUAGE).
       - Upp till 20 författare/redaktörer, därefter '...' och sista namnet.
       - @book med 'editor' när 'author' saknas: 'Efternamn, F. (Red.).'
-      - title + subtitle med kolon och versal efter kolon.
+      - title + subtitle med kolon och versal efter kolon; titleaddon i hakparentes
+        efter titeln (efter upplagan för böcker).
       - Tidskrift: *Tidskrift*, *volym*(nummer), sidor. Utan volym: *Tidskrift*, (nummer).
       - Kapitel: I F. Efternamn (Red.), *Bok* (uppl., s. x–y). Förlag.
       - Avhandling: *Titel* [Doktorsavhandling, Lärosäte]. Fältet `type` styr etiketten.
@@ -798,6 +810,7 @@ def generate_apa(entry):
 
     # 3) Titel
     title = _join_title(entry.get("title", ""), entry.get("subtitle", "")) or "Untitled"
+    addon = _titleaddon(entry)
 
     pp = _pages(entry.get("pages", ""))
     edition = _edition(entry.get("edition", ""))
@@ -825,7 +838,7 @@ def generate_apa(entry):
     if et in LEGISLATION_TYPES:
         designation, ltitle, version = _legislation_parts(entry)
         body = f"{designation}. " if designation else ""
-        body += f"*{ltitle or title}*"
+        body += f"*{ltitle or title}*{addon}"
         if version:
             body += " [" + lab["amended"].format(version=version) + "]"
         body = _tidy(body + "." + note_str)
@@ -845,16 +858,16 @@ def generate_apa(entry):
         inst = _thesis_institution(entry)
         bracket = ", ".join(x for x in (label, inst) if x)
         if bracket:
-            body += f"*{title}* [{bracket}]."
+            body += f"*{title}*{addon} [{bracket}]."
         else:
-            body += f"*{title}*."
+            body += f"*{title}*{addon}."
         out = _tidy(body + note_str)
         return f"{out} {link}" if link else out
 
     if et in ("incollection", "inbook"):
         raw_ed = entry.get("editor", "")
         bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
-        body += f"{title}. "
+        body += f"{title}{addon}. "
         if bk:
             body += f"{lab['in']} "
             if raw_ed and raw_ed != raw_author:
@@ -871,7 +884,7 @@ def generate_apa(entry):
         if pub:
             body += f" {pub}."
     elif et == "article":
-        body += f"{title}. "
+        body += f"{title}{addon}. "
         j = safe_latex_to_text(entry.get("journaltitle", entry.get("journal", ""))).strip()
         vol = entry.get("volume", "").strip()
         num = entry.get("number", "").strip() or entry.get("issue", "").strip()
@@ -892,13 +905,13 @@ def generate_apa(entry):
         body += f"*{title}*"
         if edition:
             body += f" ({edition})"
-        body += "."
+        body += f"{addon}."
         if pub:
             body += f" {pub}."
     elif et == "inproceedings":
         bk = _join_title(entry.get("booktitle", ""), entry.get("booksubtitle", ""))
         howp = safe_latex_to_text(entry.get("howpublished", "")).strip()
-        body += f"{title}."
+        body += f"{title}{addon}."
         if bk:
             body += f" {lab['in']} *{bk}*"
             if pp:
@@ -909,7 +922,7 @@ def generate_apa(entry):
         if pub:
             body += f" {pub}."
     elif et in ("misc", "online", "electronic", "www"):
-        body += f"*{title}*."
+        body += f"*{title}*{addon}."
         inst = _unless_author(
             safe_latex_to_text(entry.get("institution", entry.get("organization", ""))).strip(),
             raw_author)
@@ -923,7 +936,7 @@ def generate_apa(entry):
         if pp:
             body += f" {_page_label(pp)} {pp}."
     else:
-        body += f"{title}."
+        body += f"{title}{addon}."
         if pub:
             body += f" {pub}."
         if pp:

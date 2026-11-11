@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar,
+# Testsvit för bibber.py: APA 7-formatering (sv/en), crossref-arv, författningar, titleaddon,
 # flera nycklar (-k, --keys) och flera .bib-filer (-b).
 #
 # Användning: ./bibber_test.sh [sökväg/till/bibber.py]
@@ -727,6 +727,26 @@ check "lag: version tar series-prefixet, note efter" \
     "SKOLFS 2011:144. *Föreskrift* [ändrad t.o.m. SKOLFS 2020:5]. [Anm]" "$(lrun --lang sv -k SerieVersion)"
 check "lag: kort form" "SFS 1993:100. Högskoleförordning" \
     "$($PY -c 'import sys; sys.path.insert(0, sys.argv[1]); import bibber; print(bibber.build_standard_reference_short({"entrytype": "legislation", "number": "1993:100", "title": "Högskoleförordning (1993:100)"}))' "$(dirname "$BIBBER")" 2>&1)"
+
+# --- titleaddon: APA-beskrivning i hakparentes efter titeln (Purdue OWL, Review)
+cat > "$TMP/addon.bib" <<'BIB'
+@periodical{Nummer, title = {Religion \& Livsfrågor}, year = {2026}, volume = {58}, number = {3}, titleaddon = {Temanummer}}
+@article{Recension, author = {Björlin, Olle}, title = {Smältdegel och mångkultur?}, crossref = {Nummer}, pages = {14},
+  titleaddon = {Recension av Simon Sorgenfrei, »Öppna era hjärtan«, Norstedts 2026}}
+@article{Utrop, author = {Ek, Anna}, title = {Äntligen!}, journal = {Tidskrift}, volume = {1}, titleaddon = {[Ledare]}}
+@book{BokUppl, author = {Basu, Sanjay}, title = {History and civics}, edition = {2}, publisher = {Frank}, year = {2016}, titleaddon = {Class 6}}
+@phdthesis{AvhOvers, author = {Ek, Anna}, title = {Titel}, school = {Uppsala universitet}, year = {2020}, titleaddon = {Translated title}}
+@incollection{KapAddon, author = {Ek, Anna}, title = {Kapitel}, booktitle = {Bok}, editor = {Ek, Bo}, pages = {1-2}, year = {2020}, titleaddon = {Förord}}
+BIB
+arun() { "$BIBBER" -b "$TMP/addon.bib" "$@" 2>/dev/null; }
+check "titleaddon: recension, frågetecken står kvar, punkt efter hakparentes" \
+    "Björlin, O. (2026). Smältdegel och mångkultur? [Recension av Simon Sorgenfrei, »Öppna era hjärtan«, Norstedts 2026]. *Religion & Livsfrågor*, *58*(3), 14." \
+    "$(arun --lang sv -k Recension)"
+lacks "titleaddon: numrets titleaddon följer inte med" "Temanummer" "$(arun --lang sv -k Recension)"
+check "titleaddon: utropstecken, klamrar i fältet dubbleras inte" "Ek, A. (u.å.). Äntligen! [Ledare]. *Tidskrift*, *1*." "$(arun --lang sv -k Utrop)"
+check "titleaddon: bok, efter upplagan" "Basu, S. (2016). *History and civics* (2 uppl.) [Class 6]. Frank." "$(arun --lang sv -k BokUppl)"
+check "titleaddon: avhandling, före avhandlingsetiketten" "Ek, A. (2020). *Titel* [Translated title] [Doktorsavhandling, Uppsala universitet]." "$(arun --lang sv -k AvhOvers)"
+contains "titleaddon: kapitel" "Kapitel [Förord]. I B. Ek (Red.), *Bok*" "$(arun --lang sv -k KapAddon)"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
