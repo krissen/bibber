@@ -36,6 +36,7 @@ bibber -n 5 search terms        # five best matches
 bibber search terms             # interactive search (TUI)
 bibber -f bib -k KEY            # the BibTeX entry instead of APA
 bibber --lang sv -k KEY         # language for this run only
+bibber --lang en -k KEY --no-translation   # original titles only
 bibber -b local.bib -b main.bib -k KEY   # several files; the first one wins on duplicate keys
 ```
 
