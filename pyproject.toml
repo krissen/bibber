@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bibber"
+version = "0.1.0"
+description = "APA 7 references from biblatex/BibTeX files, with fuzzy and interactive search (Swedish and English)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "bibtexparser>=2.0.0b8",
+    "fuzzywuzzy>=0.18",
+    "python-Levenshtein>=0.20",
+    "pylatexenc>=2.10",
+    "prompt_toolkit>=3.0",
+    "pyperclip>=1.8",
+]
+
+[project.scripts]
+bibber = "bibber:main"
+
+[tool.setuptools]
+py-modules = ["bibber"]

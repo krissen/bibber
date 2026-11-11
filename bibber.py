@@ -1,4 +1,4 @@
-#!/Users/krisniem/.local/share/miniforge3/envs/default/bin/python
+#!/usr/bin/env python3
 import argparse
 import collections
 import collections.abc
@@ -260,6 +260,28 @@ def save_last_used_file(file_path):
     last_used = os.path.join(CACHE_DIR, "last_used_bibfile.json")
     with open(last_used, "w") as f:
         json.dump({"last_used": file_path}, f)
+
+def default_bib_file():
+    """Standardfilen när -b saknas: $BIBBER_BIB, annars första raden som inte
+    är tom eller en #-kommentar i $XDG_CONFIG_HOME/bibber/default_bib
+    (~/.config/bibber/default_bib).
+    Finns ingen av dem används den senast använda filen. Sökvägen låg förut
+    hårdkodad i koden, vilket band verktyget till en enda användares bibliotek."""
+    env = os.environ.get("BIBBER_BIB", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    conf_dir = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    conf = os.path.join(os.path.expanduser(conf_dir), "bibber", "default_bib")
+    try:
+        with open(conf, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return os.path.expanduser(line)
+    except OSError:
+        pass
+    return ""
+
 
 def get_last_used_file():
     last_used = os.path.join(CACHE_DIR, "last_used_bibfile.json")
@@ -2229,7 +2251,8 @@ def show_popup(title_text, body_text):
 # -------------------------------------------------
 # 9) main
 # -------------------------------------------------
-if __name__ == "__main__":
+def main():
+    global LANGUAGE, DEBUG_MODE, VERBOSE_MODE
     load_language_setting()
     args = parse_args()
     if args.lang:
@@ -2274,7 +2297,7 @@ if __name__ == "__main__":
     VERBOSE_MODE = args.verbose
 
     # Bestäm bib-fil
-    DEFAULT_BIB = os.path.expanduser("~/Documents/lektionsplanering/kallor.bib")
+    DEFAULT_BIB = default_bib_file()
     bib_file = args.bibfile
 
     # Kolla om query innehåller en fil (bakåtkompatibilitet)
@@ -2289,6 +2312,14 @@ if __name__ == "__main__":
         if os.path.isfile(DEFAULT_BIB):
             bib_file = DEFAULT_BIB
         else:
+            # En angiven standardfil som saknas är ett konfigurationsfel; utan
+            # varning skulle den senast använda filen, kanske ett annat
+            # bibliotek, tyst ta dess plats.
+            if DEFAULT_BIB:
+                if LANGUAGE == "sv":
+                    print(f"Standardfilen finns inte: {DEFAULT_BIB}", file=sys.stderr)
+                else:
+                    print(f"Default file not found: {DEFAULT_BIB}", file=sys.stderr)
             bf = get_last_used_file()
             if bf:
                 bib_file = bf
@@ -2374,3 +2405,6 @@ if __name__ == "__main__":
 
     interactive_shell()
 
+
+if __name__ == "__main__":
+    main()
