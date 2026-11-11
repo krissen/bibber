@@ -1115,6 +1115,14 @@ def get_reference_by_key(citation_key, output_format="apa"):
         if key.lower() == key_lower:
             return get_output(key, entry, output_format)
 
+    # Alias i fältet ids (biblatex: "An entry may be cited by any of its
+    # aliases", Kime2024biblatex320 s. 30). Så fortsätter en gammal nyckel,
+    # t.ex. en sammanslagen språkdubblett, att fungera.
+    for key, entry in bib_data.items():
+        aliases = [a.strip().lower() for a in entry.get("ids", "").split(",")]
+        if key_lower in aliases:
+            return get_output(key, entry, output_format)
+
     return None
 
 
