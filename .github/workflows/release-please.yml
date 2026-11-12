@@ -1,8 +1,11 @@
 name: release-please
 
+# Weekly and on demand, not on every push to main: the first run must come
+# after v0.1.0 is tagged, or release-please drafts a release PR from the whole
+# history.
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
   workflow_dispatch:
 
 permissions:
