@@ -56,8 +56,10 @@ echo "~/path/to/library.bib" > ~/.config/bibber/default_bib
 
 ### Language
 
-The interactive command `lang sv|en` sets the language and saves it. `--lang`
-applies to one run only.
+The interactive command `lang sv|en` sets the language and saves it in
+`lang.json` in the cache directory (see Cache below). The saved language is the
+default for every later run, not only the current session. `--lang` overrides
+it for one run and saves nothing.
 
 ## What is rendered
 
