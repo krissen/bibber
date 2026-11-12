@@ -1,0 +1,22 @@
+name: release-please
+
+# Weekly and on demand, not on every push to main: the first run must come
+# after v0.1.0 is tagged, or release-please drafts a release PR from the whole
+# history.
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    # The job takes well under a minute; the cap stops a hung API call from
+    # running for the six-hour default.
+    timeout-minutes: 5
+    steps:
+      - uses: googleapis/release-please-action@v4

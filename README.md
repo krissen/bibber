@@ -128,3 +128,7 @@ new version invalidates the cache.
 
 The suite is self-contained. It writes its fixtures to a temporary directory
 and points `BIBBER_CACHE_DIR` there.
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE).
