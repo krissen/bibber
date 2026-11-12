@@ -1,0 +1,19 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    # The job takes well under a minute; the cap stops a hung API call from
+    # running for the six-hour default.
+    timeout-minutes: 5
+    steps:
+      - uses: googleapis/release-please-action@v4
