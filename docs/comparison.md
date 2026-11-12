@@ -9,9 +9,10 @@ tools change, and a claim here may go stale.
 
 No tool we found does all of what bibber does. pandoc and Typst render APA 7
 from the same `.bib` files and handle the ordinary entry types well. In our
-run neither one produced the Swedish forms or printed translated titles.
-Pickers such as fzf-bibtex and citar search a library but do not render APA
-text.
+run neither one produced the Swedish statute or doctoral-thesis forms or
+printed translated titles. Of the pickers, fzf-bibtex documents output of keys
+and its own pretty-printer, not APA. We did not check whether other pickers can
+render APA text through CSL.
 
 bibber does one narrow job: you find a few references by key or fuzzy search
 and get finished APA 7 text, in Swedish or English, on stdout or the
@@ -41,8 +42,11 @@ shortened.
 | bibber | `SFS 2010:800. *Skollag* [ändrad t.o.m. SFS 2026:1636].` |
 
 `apa.csl` formats every statute the way US law is cited. bibber follows the
-form in Lund University Library's APA 7 guide to Swedish statutes. APA 7
-itself has no rule for non-US legislation.
+template in Lund University Library's APA 7 guide to Swedish statutes,
+`SFS YYYY:Number. Title. URL`, and adds the amendment in brackets when the entry
+has a `version` field. The amendment note is bibber's own addition. According
+to the guide, the APA 7 manual has no instructions for official publications
+from outside the US.
 
 ### Swedish doctoral thesis (`@phdthesis`)
 
@@ -73,9 +77,10 @@ can produce this form.
 - **Casing.** pandoc lowercased a proper noun in an English title that has
   no `langid` ("*The school education system in india*"). bibber keeps the
   casing in the data.
-- **Chapter with `crossref`.** pandoc and bibber agree. Typst printed the
-  book title twice. bibber does not inherit the parent's DOI, so a chapter
-  does not link to the book's DOI.
+- **Chapter with `crossref`.** pandoc and bibber agree except for the DOI:
+  pandoc gives the chapter the book's DOI, and bibber does not inherit it.
+  (The book's DOI in our test data was itself malformed, `doi/10.2870/…`.)
+  Typst printed the book title twice.
 - **Order.** pandoc and Typst sort the list. bibber prints the entries in the
   order you ask for them.
 
@@ -84,10 +89,11 @@ can produce this form.
 | Tool | What it is | Renders APA text? |
 |---|---|---|
 | biber + biblatex-apa | The LaTeX APA style. It includes Swedish strings (`swedish-apa.lbx`) and is the model bibber follows for descriptions in brackets. | In LaTeX documents only |
-| citeproc-js, citeproc-py, Citation.js | CSL processors, so they share `apa.csl` and its statute and translation behaviour | Yes, with CSL (not run by us) |
+| citeproc-js, citeproc-py, Citation.js | CSL processors that can use styles such as `apa.csl`; citeproc-js also supports CSL-M | Yes, with CSL; output not tested by us |
 | Hayagriva | Typst's bibliography library and format | Yes (see Typst above) |
-| fzf-bibtex, telescope-bibtex, citar | Pickers: search a `.bib` and insert keys or text from a template | No, according to their documentation |
-| betterbib | Cleans and enriches `.bib` files | No; it complements bibber |
+| fzf-bibtex | Picker: searches a `.bib` and outputs keys or its own pretty-printed text | Not according to its documentation |
+| citar, telescope-bibtex | Pickers for Emacs and Neovim; citar works with org-cite | Not checked |
+| betterbib | Cleans and enriches `.bib` files | Not according to its documentation; it complements bibber |
 | Zotero, JabRef, papis, pubs | Reference managers | Not checked |
 
 ## When to use something else
@@ -102,5 +108,10 @@ can produce this form.
 
 - The Swedish forms follow Lund University Library's APA 7 guides, which are
   a library's interpretation, not APA's.
-- `title_translation_<lang>` follows the biblatex-ms field syntax. A library
-  without the field gets no translations.
+- `title_translation_<lang>` follows the field syntax of biblatex's
+  multiscript version, biblatex-ms (its manual, version 4.0, has
+  `TITLE_translation_fr = {Titre}` in the `.bib` example). A library without
+  the field gets no translations.
+- bibber prints what the data says. A `@thesis` without `type` gets the
+  generic label (*Examensarbete*, *Thesis*), and `note` is printed as a
+  separate bracket.

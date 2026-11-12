@@ -135,10 +135,10 @@ and points `BIBBER_CACHE_DIR` there.
 
 pandoc (`--citeproc`) and Typst render APA 7 from the same `.bib` files and
 are the right tools for a whole manuscript. In a side-by-side run neither one
-produced the Swedish statute or thesis forms, and neither printed translated
-titles. Pickers such as fzf-bibtex and citar search a library but do not render
-APA text. bibber covers the gap between them: a few references, found by key
-or fuzzy search, as finished APA text in Swedish or English. See
+produced the Swedish statute or doctoral-thesis forms, and neither printed
+translated titles. Pickers such as fzf-bibtex search a library and output keys.
+bibber does a narrower job: a few references, found by key or fuzzy search, as
+finished APA text in Swedish or English. See
 [docs/comparison.md](docs/comparison.md) for the outputs and for when to use
 something else.
 
