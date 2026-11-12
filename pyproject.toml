@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bibber"
-version = "0.1.0"
+version = "0.1.1"
 description = "APA 7 references from biblatex/BibTeX files, with fuzzy and interactive search (Swedish and English)"
 readme = "README.md"
 license = "Apache-2.0"
