@@ -345,7 +345,9 @@ Interaktiva kommandon:
     parser.add_argument("-b", "--bibfile", action="append", metavar="FIL",
                         help=".bib-fil att ladda; upprepa för flera. Vid samma "
                              "nyckel vinner den fil som anges först")
-    return parser.parse_args()
+    # parse_intermixed_args: positionals split by an option (`fil.bib -n1 term`)
+    # are collected into one list; parse_args() rejected the second run.
+    return parser.parse_intermixed_args()
 
 # -------------------------------------------------
 # 1) Fil & hjälp

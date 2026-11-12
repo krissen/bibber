@@ -522,6 +522,17 @@ check "-k KEY fil.bib" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$
 out="$(run --lang sv -n1 Toleransens altare)"
 contains "-n1 sökning" "*Toleransens altare* [Doktorsavhandling, Södertörn University]." "$out"
 
+# --- Positionella argument som delas av en flagga (#3)
+exp="*Toleransens altare* [Doktorsavhandling, Södertörn University]."
+out="$("$PY" "$BIBBER" --lang sv "$TMP/main.bib" -n1 Toleransens altare 2>/dev/null)"
+contains "fil.bib -n1 term" "$exp" "$out"
+out="$("$PY" "$BIBBER" --lang sv -n1 "$TMP/main.bib" Toleransens altare 2>/dev/null)"
+contains "-n1 fil.bib term" "$exp" "$out"
+out="$("$PY" "$BIBBER" --lang sv Toleransens -b "$TMP/main.bib" -n1 altare 2>/dev/null)"
+contains "term -b fil.bib -n1 term" "$exp" "$out"
+out="$("$PY" "$BIBBER" --lang sv "$TMP/main.bib" -k Org2025 2>/dev/null)"
+check "fil.bib -k KEY" "Skolverket. (2025). *Ämnesplan i religionskunskap*." "$out"
+
 # --- Standardfilen utan -b: $BIBBER_BIB, sedan $XDG_CONFIG_HOME/bibber/default_bib
 out="$(BIBBER_BIB="$TMP/lokal.bib" "$PY" "$BIBBER" --lang sv -k Delad2000 2>/dev/null)"
 contains "standardfil: BIBBER_BIB" "Från lokala filen" "$out"
