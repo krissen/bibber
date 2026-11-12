@@ -19,4 +19,4 @@ jobs:
     # running for the six-hour default.
     timeout-minutes: 5
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
