@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ["**.md", "LICENSE"]
+  # PRs test one Python version; the weekly run covers the whole range that
+  # pyproject.toml accepts.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    # Draft PRs and release-please PRs (version bump and changelog only) are
+    # skipped. The release-please case needs both the branch name and the bot
+    # as author, since anyone can pick a branch name.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       !(startsWith(github.head_ref, 'release-please--') &&
+         github.event.pull_request.user.login == 'github-actions[bot]'))
+    runs-on: ubuntu-latest
+    # The suite takes well under a minute; the cap stops a hung test from
+    # running for the six-hour default.
+    timeout-minutes: 10
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.13"]') || fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install bibber into a venv
+        run: python -m venv .venv && .venv/bin/pip install -e .
+      - name: Run the test suite
+        run: ./bibber_test.sh
