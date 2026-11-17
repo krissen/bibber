@@ -426,6 +426,20 @@ def md5sum(file_path):
     with open(file_path,"rb") as fp:
         return hashlib.md5(fp.read()).hexdigest()
 
+def _read_bib_bytes(file_path):
+    """Läser en .bib-fil som bytes (en enda läsning, se load_bibtex)."""
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"Filen finns inte: {file_path}")
+    with open(file_path, "rb") as fp:
+        return fp.read()
+
+
+def _decode_bib(data):
+    """Bytes -> text som bibtexparser.parse_file läser den: UTF-8 och
+    universella radslut (open() i textläge gör \\r\\n och \\r till \\n)."""
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def load_from_cache(cache_file):
     """Laddar cache och returnerar (entries, search_index) eller (None, None)."""
     try:
@@ -443,8 +457,16 @@ def save_to_cache(data, cache_file, search_index=None):
     cache_obj = {"version": CACHE_VERSION, "entries": data}
     if search_index is not None:
         cache_obj["search_index"] = search_index
-    with open(cache_file, "w") as f:
-        json.dump(cache_obj, f)
+    # Atomisk skrivning: en samtidig läsare ser antingen ingen fil eller hela
+    # filen, aldrig en halvskriven.
+    tmp = f"{cache_file}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(cache_obj, f)
+        os.replace(tmp, cache_file)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 # Global instans för LaTeX-konvertering (undvik att skapa ny varje gång)
 _latex_converter = LatexNodes2Text()
@@ -522,11 +544,16 @@ def load_bibtex(file_paths, verbose=None):
     if isinstance(file_paths, str):
         file_paths = [file_paths]
     file_paths = [os.path.expanduser(f) for f in file_paths]
+    # Varje fil läses en gång: md5 och parsning görs på samma bytes. Med en
+    # läsning för nyckeln och en för parsningen kunde en fil som skrevs om
+    # däremellan (vyasa skriver kallor.bib) hamna i cachen under det gamla
+    # innehållets nyckel, och den posten lästes sedan som giltig.
     try:
-        digests = [md5sum(f) for f in file_paths]
+        raw = [_read_bib_bytes(f) for f in file_paths]
     except FileNotFoundError as e:
         print(f"Error loading bib: {e}", file=sys.stderr)
         return
+    digests = [hashlib.md5(b).hexdigest() for b in raw]
     # Cachen bär färdigresolvad data (crossref-arv), så nyckeln innehåller
     # även skriptets egen hash: en ändrad arvsregel ger då ny cache utan att
     # någon behöver komma ihåg att bumpa CACHE_VERSION.
@@ -558,13 +585,13 @@ def load_bibtex(file_paths, verbose=None):
         try:
             merged = {}
             seen_lower = set()
-            for file_path in file_paths:
+            for file_path, data in zip(file_paths, raw):
                 if verbose:
                     if LANGUAGE == "sv":
                         print(f"Laddar fil: {file_path}", file=sys.stderr)
                     else:
                         print(f"Loading file: {file_path}", file=sys.stderr)
-                library = bibtexparser.parse_file(file_path)
+                library = bibtexparser.parse_string(_decode_bib(data))
                 if library.failed_blocks:
                     print(f"Varning: {len(library.failed_blocks)} parsningsfel i {file_path}",
                           file=sys.stderr)
