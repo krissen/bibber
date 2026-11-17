@@ -743,6 +743,8 @@ cat > "$TMP/lag.bib" <<'BIB'
 @legislation{Annat, number = {2011:144}, series = {SKOLFS}, title = {Föreskrift}}
 @law{Alias, number = {1998:808}, title = {Miljöbalk}, note = {Anmärkning}}
 @legislation{AnnatNr, number = {1998:808}, title = {Lag (1999:1)}}
+@legislation{Mitt, number = {2018:1197}, title = {Lag (2018:1197) om Förenta nationernas konvention om barnets rättigheter}}
+@legislation{MittAnnat, number = {2018:1197}, title = {Lag (1999:1) om något}}
 @legislation{UtanNr, author = {{Riksdagen}}, title = {Utan nummer}}
 @legislation{SerieVersion, number = {2011:144}, series = {SKOLFS}, title = {Föreskrift},
   version = {2020:5}, note = {Anm}}
@@ -759,6 +761,9 @@ check "lag: SFS-prefix i numret, titelns nummer stryks" "SFS 1993:100. *Högskol
 check "lag: annan författningssamling via series" "SKOLFS 2011:144. *Föreskrift*." "$(lrun --lang sv -k Annat)"
 check "lag: @law som alias, note före länk" "SFS 1998:808. *Miljöbalk*. [Anmärkning]" "$(lrun --lang sv -k Alias)"
 check "lag: annat nummer i titeln står kvar" "SFS 1998:808. *Lag (1999:1)*." "$(lrun --lang sv -k AnnatNr)"
+check "lag: numret stryks mitt i titeln (UU2026apa7offentligt)" \
+    "SFS 2018:1197. *Lag om Förenta nationernas konvention om barnets rättigheter*." "$(lrun --lang sv -k Mitt)"
+check "lag: annat nummer mitt i titeln står kvar" "SFS 2018:1197. *Lag (1999:1) om något*." "$(lrun --lang sv -k MittAnnat)"
 check "lag: utan nummer står författaren som beteckning" "Riksdagen. *Utan nummer*." "$(lrun --lang sv -k UtanNr)"
 check "lag: version tar series-prefixet, note efter" \
     "SKOLFS 2011:144. *Föreskrift* [ändrad t.o.m. SKOLFS 2020:5]. [Anm]" "$(lrun --lang sv -k SerieVersion)"

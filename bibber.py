@@ -967,11 +967,16 @@ def _legislation_parts(entry):
     if not designation and entry.get("author"):
         designation = _join_names(_person_list(entry["author"]))
     title = _join_title(entry.get("title", ""), entry.get("subtitle", ""))
-    # Riksdagens titel bär numret ("Skollag (2010:800)"); APA-guiden utelämnar
-    # det, eftersom det redan står i beteckningen. Bara exakt samma nummer tas bort.
+    # Riksdagens titel bär numret, sist ("Skollag (2010:800)") eller mitt i
+    # ("Lag (2018:1197) om …"). Guiderna utelämnar det, eftersom det redan står
+    # i beteckningen: LUB2026apa7lagar för numret sist ("Djurskyddslag"),
+    # Uppsala universitetsbiblioteks "Offentligt tryck" (UU2026apa7offentligt)
+    # för numret mitt i ("Lag om ackreditering och teknisk kontroll (SFS
+    # 2011:791)", Riksdagens titel "Lag (2011:791) om …"). Bara exakt samma
+    # nummer tas bort.
     if number:
         bare = re.sub(r"^\D+\s*", "", number)
-        title = re.sub(r"\s*\(" + re.escape(bare) + r"\)\s*$", "", title)
+        title = re.sub(r"\s*\(" + re.escape(bare) + r"\)", "", title).strip()
     version = _sfs(entry.get("version", ""), series)
     return designation, title, version
 
