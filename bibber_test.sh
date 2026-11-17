@@ -558,6 +558,36 @@ BIBBER_CACHE_DIR="$TMP/cache-script" "$PY" "$TMP/bibber_copy.py" -b "$TMP/main.b
 n="$(ls "$TMP/cache-script" | grep -cE '^[0-9a-f]{32}\.json$')"
 check "ny cache när skriptet ändras" "2" "$n"
 
+# --- En läsning per fil: md5 och parsning på samma innehåll. Simulerar att
+# kallor.bib skrivs om direkt efter första läsningen; posterna ska då komma
+# från det innehåll som cachenyckeln räknades på, inte från det nya.
+mkdir -p "$TMP/cache-race"
+printf '@book{Gammal2000, title = {T}, year = {2000}}\n' > "$TMP/race.bib"
+out="$(BIBBER_CACHE_DIR="$TMP/cache-race" "$PY" - "$(dirname "$BIBBER")" "$TMP/race.bib" <<'PYEOF' 2>&1
+import builtins, io, sys
+sys.path.insert(0, sys.argv[1])
+import bibber
+bib = sys.argv[2]
+real_open = builtins.open
+state = {"done": False}
+def racing_open(file, mode="r", *a, **kw):
+    if not state["done"] and str(file) == bib:
+        state["done"] = True
+        with real_open(file, "rb") as f:
+            old = f.read()
+        with real_open(file, "w") as f:
+            f.write("@book{Ny2001, title = {T}, year = {2001}}\n")
+        return io.BytesIO(old) if "b" in mode else io.StringIO(old.decode())
+    return real_open(file, mode, *a, **kw)
+builtins.open = racing_open
+bibber.load_bibtex(bib, verbose=False)
+builtins.open = real_open
+print(" ".join(sorted(bibber.bib_data)))
+PYEOF
+)"
+check "cache: nyckel och poster från samma läsning" "Gammal2000" "$out"
+check "cache: ingen tmp-fil kvar" "0" "$(ls "$TMP/cache-race" | grep -c '\.tmp$')"
+
 # --- Gallring: högst fem cachefiler, lang/last_used står kvar
 for i in 1 2 3 4 5 6 7; do
     printf '@book{G%s, title = {T}, year = {2000}}\n' "$i" > "$TMP/g$i.bib"
