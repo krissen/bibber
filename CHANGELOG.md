@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/krissen/bibber/compare/v0.1.1...v0.1.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cache:** hash and parse the same read of each bib file ([#14](https://github.com/krissen/bibber/issues/14)) ([ac7e959](https://github.com/krissen/bibber/commit/ac7e959c0545a5663e19692c29c13c088752d46a))
+* **legislation:** strip the SFS number from the middle of a title ([#13](https://github.com/krissen/bibber/issues/13)) ([7158bac](https://github.com/krissen/bibber/commit/7158bac5edc26a3a97c2c69db75f545fb747a664))
+
 ## [0.1.1](https://github.com/krissen/bibber/compare/v0.1.0...v0.1.1) (2026-11-12)
 
 
