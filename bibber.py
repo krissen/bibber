@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 import bibtexparser
 from fuzzywuzzy import fuzz
@@ -207,6 +208,7 @@ NO_TRANSLATION_ALL = False
 NO_TRANSLATION_KEYS = set()
 COMPACT_MAX_CHARS = 95  # hård max-längd i kompakt vy
 CACHE_KEEP = 5  # antal cachefiler (bib-kombinationer/versioner) som sparas
+CACHE_TMP_MAX_AGE = 600  # sekunder; json.dump av 2,7 MB tog 0,02 s (mätt 2026-11-28), så marginalen är stor
 CACHE_VERSION = "4"  # Bump vid ändringar i cache-format (3: sökindex, 4: crossref-arv)
 
 # -------------------------------------------------
@@ -408,11 +410,33 @@ def _prune_cache(keep):
     (~2,5 MB för kallor.bib); utan gallring växte ~/.cache/bibber till
     52 MB (2026-11-07). Bara filer vars namn är en md5-summa rörs, så
     lang.json och last_used_bibfile.json står kvar.
+
+    Temporärfiler från save_to_cache (`<md5>.json.<pid>.tmp`) tas också
+    bort, men först när de är äldre än CACHE_TMP_MAX_AGE. En sådan fil
+    blir kvar om processen dödas mellan skrivningen och os.replace
+    (SIGKILL, strömavbrott), och är lika stor som en hel cachefil (#15).
+    Åldersgränsen skyddar en skrivning som en annan bibber-process gör
+    just nu; att i stället fråga om pid:en lever vore opålitligt, eftersom
+    pid:ar återanvänds.
     """
     try:
-        names = [n for n in os.listdir(CACHE_DIR)
-                 if re.fullmatch(r"[0-9a-f]{32}\.json", n)]
-        paths = sorted((os.path.join(CACHE_DIR, n) for n in names),
+        names = os.listdir(CACHE_DIR)
+    except OSError:
+        return  # gallring är städning, aldrig ett skäl att fallera
+    cutoff = time.time() - CACHE_TMP_MAX_AGE
+    for n in names:
+        if not re.fullmatch(r"[0-9a-f]{32}\.json\.\d+\.tmp", n):
+            continue
+        path = os.path.join(CACHE_DIR, n)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass  # en annan process hann före; fortsätt med nästa
+    try:
+        cache_names = [n for n in names
+                       if re.fullmatch(r"[0-9a-f]{32}\.json", n)]
+        paths = sorted((os.path.join(CACHE_DIR, n) for n in cache_names),
                        key=os.path.getmtime, reverse=True)
         for old in paths[keep:]:
             os.remove(old)

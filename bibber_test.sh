@@ -597,6 +597,19 @@ n="$(ls "$BIBBER_CACHE_DIR" | grep -cE '^[0-9a-f]{32}\.json$')"
 check "cache gallras till fem" "5" "$n"
 check "last_used står kvar" "yes" "$([ -e "$BIBBER_CACHE_DIR/last_used_bibfile.json" ] && echo yes || echo no)"
 
+# --- Gallring: en tmp-fil från en avbruten skrivning tas bort när den är gammal,
+# men inte en färsk, som kan vara en annan process pågående skrivning (#15)
+mkdir -p "$TMP/cache-tmp"
+old_tmp="$TMP/cache-tmp/0123456789abcdef0123456789abcdef.json.4242.tmp"
+new_tmp="$TMP/cache-tmp/fedcba9876543210fedcba9876543210.json.4343.tmp"
+: > "$old_tmp"
+: > "$new_tmp"
+touch -t 202001010000 "$old_tmp"
+printf '@book{Tmp1, title = {T}, year = {2000}}\n' > "$TMP/tmp1.bib"
+BIBBER_CACHE_DIR="$TMP/cache-tmp" "$PY" "$BIBBER" -b "$TMP/tmp1.bib" -k Tmp1 >/dev/null 2>&1
+check "cache: gammal tmp-fil gallras" "no" "$([ -e "$old_tmp" ] && echo yes || echo no)"
+check "cache: färsk tmp-fil står kvar" "yes" "$([ -e "$new_tmp" ] && echo yes || echo no)"
+
 # --- --lang sparas inte
 check "--lang sparas inte" "no" "$([ -e "$BIBBER_CACHE_DIR/lang.json" ] && echo yes || echo no)"
 
